@@ -18,6 +18,13 @@
 ; * sfx_play: plays a sfx frame from the ISR. Idem
 ; * psgrout: generic routine to dump all PSG registers
 ;
+; 07/01/2020: Fixed: Now evnt18 doesn't disables sprites at all; so you can use the sprites in an ending scene (if you need to hide them, use now SPRITESOFF)
+; 07/01/2020: Added: Due the change in evnt18, a new command SPRITESOFF has been added to the compiler, it hides all sprites by setting 208 Y-coord to sprite 0
+; 09/01/2020: Fixed: CLS & CLW routines now erase scrmap buffer and also disable sprites (Thanks to FX).
+; 01/02/2020: Fixed: ROM stack initialization bug in MSX machines with drives (specially TR)
+;
+; ptxt: core routine that prints a font character (no color)
+; pchr: core routine that prints a BLOCK (pattern+color)
 
 ROM=0
 DISK=1
@@ -357,9 +364,13 @@ VAPTIM	equ 10				; vapour particle life time
 ; contended RAM, leaving the code and rest of the game in uncontended memory at 32768 and beyond.
 
 start:
+	if DISTYPE=ROM
+		ld sp,$F380
+	else
  		ld hl,(MSX_HIMEM)
 		dec hl
 		ld sp,hl
+	endif
  		
 	if DISTYPE=DISK
 		call drvmotoff
@@ -750,20 +761,7 @@ dbox0:
 
 
 		call ptxt           ; display character.		
-		set 5,h				; DE=VRAM patterns, add $20 and now we're in color table
-		ld a,l
-        di
-        out (MSX_VDPCW),a
-        ld a,h
-		ld c,8
-        or 01000000b       ;for write, set bit 6 high
-        out (MSX_VDPCW),a
-        ei		
-		ld a,(clratt)
-.nxtrow:
-		out (MSX_VDPDRW),a
-		dec c
-		jr nz,.nxtrow
+		
 		ld hl,dispy         ; y coordinate.
 		inc (hl)            ; move along one.
 		
@@ -798,20 +796,7 @@ dboxf:
 		push bc             ; store characters remaining.	   
 		ld a,32
 		call ptxt           ; display character.		
-		set 5,h				; DE=VRAM patterns, add $20 and now we're in color table
-		ld a,l
-        di
-        out (MSX_VDPCW),a
-        ld a,h
-		ld c,8
-		or 01000000b       ;for write, set bit 6 high
-        out (MSX_VDPCW),a
-        ei		
-		ld a,(clratt)
-.nxtrow:
-		out (MSX_VDPDRW),a
-		dec c
-		jr nz,.nxtrow
+		
 		ld hl,dispy         ; y coordinate.
 		inc (hl)            ; move along one.		
 		pop bc              ; retrieve character count.
@@ -1353,7 +1338,8 @@ cls:
 		call MSX_CLS
 		ld hl,0             ; set hl to origin (0, 0).
 		ld (charx),hl       ; reset coordinates.
-		ret
+		call clrscrmap
+		jp dissprs
 
 ; Set palette routine and data.
 ; Palette.
@@ -2163,7 +2149,7 @@ newlev:
 		ld (scno),a         ; set new level number.
 		jp rstrt            ; restart, clearing all aliens.
 evwon:
-		call dissprs
+		;call dissprs
 		call evnt18         ; game completed.
 		jp tidyup           ; tidy up and return to BASIC/calling routine.
 
@@ -2935,10 +2921,7 @@ dscor0:
 		push hl
 		ld a,(hl)           ; fetch character.
 		call ptxt           ; display character.
-		ld a,(clratt)        ; current cell colours.
-		set 5,h				; HL=VRAM patterns, add $20 and now we're in color table
-		ld c,8				; B remains 0 from pchar call
-		call MSX_FILVRM
+		
 		ld hl,dispy         ; y coordinate.
 		inc (hl)            ; move along one.
 		pop hl
@@ -3113,29 +3096,14 @@ chradd:
 ; print char pattern (without color) (MSX:OK)
 		
 ptxt:
-		rlca                ; multiply char by 8.
+		rlca                ; find address for the font char
 		rlca
-		rlca
+		rlca				; multiply char code by 8.
 		ld e,a              ; store shift in e.
 		and 7               ; only want high byte bits.
 		ld d,a              ; store in d.
 		ld a,e              ; restore shifted value.
 		and 248             ; only want low byte bits.
-		jp pchar0
-		
-; print block pattern (without color) (MSX:OK)
-
-pchar:
-		rlca                ; multiply char by 16
-		rlca
-		rlca
-		rlca
-		ld e,a              ; store shift in e.
-		and $0F             ; only want high byte bits.
-		ld d,a              ; store in d.
-		ld a,e              ; restore shifted value.
-		and $F0             ; only want low byte bits.
-pchar0:
 		ld e,a              ; that's the low byte. DE=CHAR*8
 		ld hl,(grbase)      ; address of graphics.
 		add hl,de           ; add displacement.
@@ -3143,11 +3111,18 @@ pchar0:
 		SETWRT de
 		ld bc,8*256+MSX_VDPDRW
 ldirvm0:
-		outi
+		outi				; writes pattern bytes
 		jp nz,ldirvm0		
-		ex de,hl			
+		set 5,d				; DE=VRAM patterns, add $20 and now we're in color table
+		SETWRT de
+		ld c,8
+		ld a,(clratt)
+.nxtrow:
+		out (MSX_VDPDRW),a	; writes color bytes
+		dec c
+		jp nz,.nxtrow
 		ret
-
+		
 ; Print block with attributes, properties and pixels.
 
 pattr:
@@ -3179,12 +3154,28 @@ pattr1:
  		ld (hl),b		
 		ld a,b              ; restore block number.
 
-; Print character pixels, no more.
+; Print block.
 pchr:
-		call pchar          ; show character in accumulator.
-		set 5,h				; HL=VRAM patterns, add $20 and now we're in color table
-		SETWRT hl
-		ex de,hl
+		rlca                ; find address for the block 
+		rlca
+		rlca
+		rlca				; multiply block code by 16
+		ld e,a              ; store shift in e.
+		and $0F             ; only want high byte bits.
+		ld d,a              ; store in d.
+		ld a,e              ; restore shifted value.
+		and $F0             ; only want low byte bits.
+		ld e,a              ; that's the low byte. DE=CHAR*8
+		ld hl,(grbase)      ; address of graphics.
+		add hl,de           ; add displacement.
+		call gprad          ; get screen address (in DE)
+		SETWRT de
+		ld bc,8*256+MSX_VDPDRW
+.ldirvm0:
+		outi
+		jp nz,.ldirvm0		
+		set 5,d				; HL=VRAM patterns, add $20 and now we're in color table
+		SETWRT de
 		ld b,8
 .loop:
 		outi
@@ -3834,21 +3825,6 @@ dmsg0:
 		cp 13               ; newline character?
 		jr z,dmsg1
 		call ptxt           ; display character.		
-		set 5,h				; DE=VRAM patterns, add $20 and now we're in color table
-		; Write 8 color attribute bytes
-		ld a,l
-        di
-        out (MSX_VDPCW),a
-        ld a,h
-		ld c,8
-        or 01000000b       ;for write, set bit 6 high
-        out (MSX_VDPCW),a
-        ei		
-		ld a,(clratt)
-.nxtrow:
-		out (MSX_VDPDRW),a
-		dec c
-		jp nz,.nxtrow
 		
 		call nexpos         ; display position.
 		jr nz,dmsg2         ; not on a new line.
@@ -4061,12 +4037,7 @@ achar:
 		and a               ; standard size?
 		ld a,b              ; character in accumulator.
 		jp nz,bchar         ; no, double-height text.
-		call ptxt          ; display character.
-	   
-		ld a,(clratt)        ; current cell colours.
-		set 5,h				; HL=VRAM patterns, add $20 and now we're in color table
-		ld c,8				; B remains 0 from pchar call
-		call MSX_FILVRM
+		call ptxt           ; display character.
 	   
 		call nexpos         ; display position.
 		jp z,bchar3         ; next line down.
@@ -4078,7 +4049,7 @@ nexpos:
 		ld hl,dispy         ; X display position.
 		ld a,(hl)           ; get coordinate.
 		inc a               ; move along one position.
-		and MSX_MAXCOLS-1       ; reached edge of screen?
+		and MSX_MAXCOLS-1   ; reached edge of screen?
 		
 		ld (hl),a           ; set new position.
 		dec hl              ; point to y now.
@@ -4088,7 +4059,7 @@ nexpos:
 
 nexlin inc (hl)            ; newline.
        ld a,(hl)           ; vertical position.
-       cp MSX_MAXROWS          ; past screen edge?
+       cp MSX_MAXROWS      ; past screen edge?
        ret c               ; no, still okay.
        ld (hl),0           ; restart at top.
        ret
@@ -5103,7 +5074,8 @@ clw:
 		djnz .loop3
 		ld hl,(wintop)      ; get coordinates of window.
 		ld (charx),hl       ; put into display position.
-		ret		
+		call clrscrmap
+		jp dissprs
 
 
 	if SFLAG

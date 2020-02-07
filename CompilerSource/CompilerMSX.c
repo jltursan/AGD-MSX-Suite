@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -247,6 +246,7 @@ enum
 	INS_MACHINE,
 	INS_CALL,
 	INS_MUSIC,
+	INS_SPRITESOFF,
 	
 	CMP_EVENT,
 	CMP_DEFINEBLOCK,
@@ -427,6 +427,7 @@ void CR_Bonus( void );
 void CR_AddBonus( void );
 void CR_ZeroBonus( void );
 void CR_Music( void );
+void CR_SpritesOff( void );
 void CR_Sound( void );
 void CR_Beep( void );
 void CR_Crash( void );
@@ -732,6 +733,7 @@ unsigned const char *keywrd =
 	"MACHINE."			// machine for which we're compiling.
 	"CALL."				// call an external routine.
 	"MUSIC."            // Plays a PT2 song
+	"SPRITESOFF."       // Disables all sprites
 
 	/* compiler keywords. */
 	"EVENT."			// change event.
@@ -2262,6 +2264,8 @@ void CreatePositions( void )
 		}
 		else
 		{
+			WriteNumber( 255 );
+			WriteText( "," );
 			WriteNumber( 255 );								/* end marker for whole game. */
 			nThisScreen = nScreen;
 		}
@@ -2972,6 +2976,9 @@ void Compile( unsigned short int nInstruction )
 			break;
 		case INS_MUSIC:
 			CR_Music();
+			break;
+		case INS_SPRITESOFF:
+			CR_SpritesOff();
 			break;
 		case INS_SOUND:
 			CR_Sound();
@@ -4214,6 +4221,11 @@ void CR_Music( void )
 	} 
 	
 	nMusic = 1;
+}
+
+void CR_SpritesOff( void )
+{
+	WriteInstruction( "call dissprs" );
 }
 
 void CR_Beep( void )
@@ -5714,7 +5726,6 @@ void CR_DefineFont( void )
 		{
 			b =  (unsigned char)GetNum( 8 );
 			cDefaultFont[ nByte++ ] = b;
-			/* printf("Font byte: [%u]\n",b); */
 		}
 		else
 		{
