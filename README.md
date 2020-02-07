@@ -1,5 +1,6 @@
 
 
+
 # MSX AGD Suite
 AGD suite for converting, compiling and running AGD games on an MSX machine. Right now, the generated games will work in all MSX machine types; but only MSX1 features are supported (except color palettes to some extent).
 
@@ -164,7 +165,7 @@ ayFXEdit (https://shiru.untergrund.net/software.shtml) can be used to edit and c
 
     DEFINECONTROLS
 
-Now they're the following as default: 
+Now they're the following as default (note that "default" means no DEFINECONTROLS is added to the code): 
 
  - Movement: Cursor keys 
  - Fire 1: Space 
@@ -176,6 +177,10 @@ Now they're the following as default:
  - Option 4: "4"
 
 When a joystick is used (1 or 2), both fire buttons are used and the third button is still mapped to the keyboard (joymega is still not supported).
+
+    SPRITESOFF
+
+Hides all sprites, no parameters are used. They'll remain hidden until you set again their coordinates (eg.: entering a new screen or manually). 
 
     STOP key
 
