@@ -342,32 +342,6 @@ if /I "%DIST%"=="RAM" (
 
 	echo Process finished^^!^^!
 	goto :eof
-	
-:execemu
-	cd "%MSXEMUPATH%"
-	if NOT "%CFLAG%"=="" (
-		set MEDIA=-carta %NAME%.rom
-	) else if NOT "%DFLAG%"=="" (
-		set MEDIA=-diska %NAME%.dsk
-	) else if NOT "%KFLAG%"=="" (
-		set MEDIA=-cassetteplayer insert %NAME%.cas
-	)
-	if %1 equ 1 (
-		if NOT "%DFLAG%"=="" (
-			set MEDIA=-ext Sony_HBD-F1 !MEDIA!
-		)
-		start /B %EMU% -machine Sony_HB-75P !MEDIA!
-	) else if %1 equ 2 (
-		start /B %EMU% -machine Philips_NMS_8245 %MEDIA%
-	) else if %1 equ 3 (
-		start /B %EMU% -machine Panasonic_FS-A1WX %MEDIA%
-	) else if %1 equ 4 (
-		start /B %EMU% -machine Panasonic_FS-A1GT %MEDIA%
-	) else (
-		echo Error: Unknown MSX model^!. Can't play game...
-		exit /b 1
-	)
-	exit /b 0
 
 :createrom
 	echo ========= Creating ROM distribution ===================================================
@@ -451,6 +425,32 @@ if /I "%DIST%"=="RAM" (
 
 	echo Process finished^^!^^!
 	goto :eof
+	
+:execemu
+	cd /d "%MSXEMUPATH%"
+	if NOT "%CFLAG%"=="" (
+		set MEDIA=-carta %NAME%.rom
+	) else if NOT "%DFLAG%"=="" (
+		set MEDIA=-diska %NAME%.dsk
+	) else if NOT "%KFLAG%"=="" (
+		set MEDIA=-cassetteplayer insert %NAME%.cas
+	)
+	if %1 equ 1 (
+		if NOT "%DFLAG%"=="" (
+			set MEDIA=-ext Sony_HBD-F1 !MEDIA!
+		)
+		start /B %EMU% -machine Sony_HB-75P !MEDIA!
+	) else if %1 equ 2 (
+		start /B %EMU% -machine Philips_NMS_8245 %MEDIA%
+	) else if %1 equ 3 (
+		start /B %EMU% -machine Panasonic_FS-A1WX %MEDIA%
+	) else if %1 equ 4 (
+		start /B %EMU% -machine Panasonic_FS-A1GT %MEDIA%
+	) else (
+		echo Error: Unknown MSX model^!. Can't play game...
+		exit /b 1
+	)
+	exit /b 0
 	
 :createbin
 	echo 	output %2 >dskdir\HEADER.ASM
