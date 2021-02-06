@@ -64,10 +64,6 @@ AR_Env:		equ 11	;RESW 1
 AR_EnvTp:	equ 13	;RESB 1
 ;endstruc
 
-; PSG PORTS
-MSX_PSGLW	equ $A0		; latch address for PSG
-MSX_PSGDW	equ	$A1		; write data to PSG
-
 		; --- CODE STARTS HERE ---
 
 	if YFLAG
@@ -627,7 +623,6 @@ PT3_PLAY:
 		or a
 		ret nz
 		
-		; XOR A
 		LD [PT3_AddToEn],A
 		LD [AYREGS+AR_Mixer],A
 		DEC A
@@ -813,32 +808,41 @@ music_init:
 music_mute:	
 		ld a,1
 		ld (mutesong),a
-mixeroff:
-		xor a
-		ld h,a
-		ld l,a
-		ld (AYREGS+AR_AmplA),a
-		ld (AYREGS+AR_AmplB),hl
+
+resetregs:
+		ld hl,AYREGS
+		ld de,AYREGS+1
+		ld bc,13
+		ld (hl),0
+		ldir
+		ret
 		; needs to continue with psgrout
-	
 ;
 ; WARNING: This routine must always exist
 ; Dumps buffer content (AYREGS) to PSG registers (0-13)
-;	
-psgrout:
-		xor a ; --- FIXES BITS 6 AND 7 OF MIXER ---
-		ld hl,AYREGS+AR_Mixer
-		set 7,(hl)
-		res 6,(hl)
+;		
+		
+psgrout:	
+		xor a
+; --- fixes bits 6 and 7 of mixer ---
+		ld	hl,AYREGS+AR_Mixer
+		set	7,(hl)
+		res	6,(hl)
+
 		ld c,MSX_PSGDW
 		ld hl,AYREGS
-.sfxloop:
+.lout:		
 		out (MSX_PSGLW),a
+		outi 
 		inc a
-		outi
 		cp 13
-		jr nz,.sfxloop	
+		jr nz,.lout
+		out (MSX_PSGLW),a
+		ld a,(hl)
+		and a
+		ret m
+		out (MSX_PSGDW),a
 		ret
-		
+			
 	endif
 	

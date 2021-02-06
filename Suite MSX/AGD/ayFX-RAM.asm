@@ -12,7 +12,7 @@ ayFX_NOISE:		ds 1			; Current noise of the ayFX stream
 ayFX_VOLUME:	ds 1			; Current volume of the ayFX stream
 ayFX_CHANNEL:	ds 1			; PSG channel to play the ayFX stream
 
- 	if AYFXRELATIVE
+ 	if FX_RELATIVE
 
 ayFX_VT:		ds 2			; ayFX relative volume table pointer
 

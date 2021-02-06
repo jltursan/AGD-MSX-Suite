@@ -4,10 +4,20 @@
 #include <ctype.h>
 #include <getopt.h>
 
+#include "PletterEncoder.h"
+
 /* Definitions. */
 
 #define LF						0x0a
 #define CR						0x0d
+
+enum
+{
+    INVALID,
+    NUMBER,
+    PARAMETER,
+    STRING
+};
 
 enum
 {
@@ -52,12 +62,15 @@ enum
 #define GLOBALS				( VAR_EDGET - SPR_X + X )	/* global variables. */
 #define IDIFF				( SPR_TYP - PAM1ST )		/* diff between type and first sprite param. */
 #define ASMLABEL_DUMMY		1366
-#define NMESIZE				5				/* number of bytes of the enemy attributes */
+#define NMESIZE				5				/* number of bytes of the enemy attributes (SPRITEPOSITION) */
 #define MAXHOPS				50
 
 #define SPRITE_SIZE			32
+#define BLOCK_SIZE			16	/* 2 byte * 8 lines */
+#define OBJECT_SIZE			64	/* 4 bytes * 16 lines */
 #define TEXT_MAXCOL			32
 #define TEXT_MAXROW			24
+#define PALETTE_COLORS		16
 
 #define DROPMSG				0
 #define STOREMSG			1
@@ -247,7 +260,11 @@ enum
 	INS_CALL,
 	INS_MUSIC,
 	INS_SPRITESOFF,
-	
+	INS_CRUMBLE,
+	INS_THRUST,
+	INS_SCREENON,
+	INS_SCREENOFF,
+
 	CMP_EVENT,
 	CMP_DEFINEBLOCK,
 	CMP_DEFINEWINDOW,
@@ -353,13 +370,25 @@ enum outputMode
 	TAPE
 };
 
-
-typedef struct songsdata_t 
-{ 
+typedef struct songsdata_t
+{
 	int number;
-	char name[10][64]; 
+	char name[10][64];
 	int maxsize;
 } SongsData;
+
+typedef struct packeddata_t
+{
+    int packedSize;
+	unsigned char *ptr;
+} PackedData;
+
+typedef struct screensdata_t
+{
+    int number;
+	int unpackedSize;
+	PackedData data[256];
+} ScreensData;
 
 /****************************************************************************************************************/
 /* Function prototypes.                                                                                         */
@@ -404,7 +433,7 @@ void CR_Deadly( void );
 void CR_Custom( void );
 void CR_To( void );
 void CR_By( void );
-void CR_ClS( void );
+void CR_Cls( void );
 void CR_Got( void );
 void CR_Key( void );
 void CR_DefineKey( void );
@@ -428,6 +457,10 @@ void CR_AddBonus( void );
 void CR_ZeroBonus( void );
 void CR_Music( void );
 void CR_SpritesOff( void );
+void CR_Crumble( void );
+void CR_Thrust( void );
+void CR_ScreenOn( void );
+void CR_ScreenOff( void );
 void CR_Sound( void );
 void CR_Beep( void );
 void CR_Crash( void );
@@ -519,6 +552,7 @@ char SpriteEvent( void );
 void CompileShift( short int nArg );
 unsigned short int CompileArgument( void );
 unsigned short int CompileKnownArgument( short int nArg );
+unsigned short int findArgumentType( short int nArg );
 unsigned short int NumberOnly( void );
 void CR_Operator( unsigned short int nOperator );
 void CR_Else( void );
@@ -543,6 +577,8 @@ void WriteLabel( unsigned short int nWhere );
 void NewLine( void );
 void Error( unsigned char *cMsg );
 long Filesize(const char *filename);
+void define_page();
+void usage( void );
 
 /* Constants. */
 
@@ -629,7 +665,7 @@ unsigned const char *keywrd =
 	/* Commands. */
 
 	"DEFINEKEY."		// define key.
-	"COLLISION."		// collision with sprite.
+	"COLLISION."		// collision with sprite. (70)
 	" ."				// number to follow.
 	"=."				// equals, ignored.
 	">=."				// greater than or equal to, ignored.
@@ -659,7 +695,7 @@ unsigned const char *keywrd =
 	"SOUND."			// play sound.
 	"BEEP."				// play beeper sound.
 	"CRASH."			// play white noise sound.
-	"CLS."				// clear screen.
+	"CLS."				// clear screen. (100)
 	"BORDER."			// set border.
 	"COLOUR."			// set all attributes.
 	"PAPER."			// set PAPER attributes.
@@ -689,7 +725,7 @@ unsigned const char *keywrd =
 	"SPAWNED."			// select spawned sprite.
 	"ENDSPRITE."		// select original sprite.
 	"ENDGAME."			// end game with victory.
-	"GET."				// get object.
+	"GET."				// get object. (130)
 	"PUT."				// drop object.
 	"REMOVEOBJ."		// remove object.
 	"DETECTOBJ."		// detect object.
@@ -719,7 +755,7 @@ unsigned const char *keywrd =
 	"DEFINEPARTICLE."	// define the user particle behaviour.
 	"PARTICLEUP."		// move up.
 	"PARTICLEDOWN."		// move down.
-	"PARTICLELEFT."		// move left.
+	"PARTICLELEFT."		// move left. (160)
 	"PARTICLERIGHT."	// move right.
 	"PARTICLEDECAY."	// decrement timer and remove.
 	"NEWPARTICLE."		// start a new user particle.
@@ -734,6 +770,10 @@ unsigned const char *keywrd =
 	"CALL."				// call an external routine.
 	"MUSIC."            // Plays a PT2 song
 	"SPRITESOFF."       // Disables all sprites
+	"CRUMBLE."			// crumbling blocs
+	"THRUST."			// thrust for rotational control
+	"SCREENON."			// Enable display
+	"SCREENOFF."		// Disable display
 
 	/* compiler keywords. */
 	"EVENT."			// change event.
@@ -744,7 +784,7 @@ unsigned const char *keywrd =
 	"SPRITEPOSITION."	// define sprite position.
 	"DEFINEOBJECT."		// define object.
 	"MAP."				// set up map.
-	"STARTSCREEN."		// start screen.
+	"STARTSCREEN."		// start screen. (184)
 	"WIDTH."			// map width.
 	"ENDMAP."			// end of map.
 	"DEFINEPALETTE."	// define palette.
@@ -753,7 +793,7 @@ unsigned const char *keywrd =
 	"DEFINEJUMP."		// define jump table.
 	"DEFINECONTROLS."	// define key table.
 	"DEFINEMUSIC."		// define song.
-	
+
 	/* Constants. */
 	"LEFT."				// left constant (keys).
 	"RIGHT."			// right constant (keys).
@@ -898,15 +938,16 @@ unsigned short int cDefaultPalette[] =
 	// Spectrum palette
 	// 0x000,0x000,0x500,0x700,0x005,0x007,0x050,0x505,
 	// 0x070,0x077,0x550,0x770,0x707,0x055,0x555,0x777
-	
+
+	// MSX2: GRB format
 	0x000,0x000,0x611,0x733,0x117,0x327,0x151,0x627,
 	0x171,0x373,0x661,0x664,0x411,0x265,0x555,0x777
-	
-	// CoolColors 
-	// 0x000,0x000,0x523,0x634,0x215,0x326,0x251,0x537, 
+
+	// CoolColors
+	// 0x000,0x000,0x523,0x634,0x215,0x326,0x251,0x537,
 	// 0x362,0x472,0x672,0x774,0x412,0x254,0x555,0x777
 };
-		
+
 unsigned char cDefaultFont[ 768 ];
 
 /* Hop/jump table. */
@@ -923,14 +964,14 @@ unsigned short int cDefaultKeys[ 11 ] =
 
 };
 
-/* 
+/*
 left:		EQU $1008
 right:		EQU $8008
 up:			EQU $2008
 down:		EQU $4008
 space:		EQU $0108
 key_m:		EQU $0404
-key_n:		EQU $0804	
+key_n:		EQU $0804
 key_1:		EQU $0200
 key_2:		EQU $0400
 key_3:		EQU $0800
@@ -959,6 +1000,7 @@ unsigned char *cBuff;
 unsigned char *cObjt;
 unsigned char *cStart;
 unsigned char *cErrPos;
+unsigned char tmpbuf[256];
 unsigned short int nIfBuff[ NUM_NESTING_LEVELS ][ 2 ];		/* nested IF addresses. */
 unsigned short int nNumIfs;									/* number of IFs. */
 unsigned short int nReptBuff[ NUM_REPEAT_LEVELS ];			/* nested REPEAT addresses. */
@@ -999,12 +1041,17 @@ unsigned char cMapWid = 0;									/* width of map. */
 short int nStartOffset = 0;									/* starting screen offset. */
 short int nUseFont = 0;										/* use custom font when non-zero. */
 short int nUseHopTable = 0;									/* use jump table when non-zero. */
-// short int nDig = 0;											/* append dig code when non-zero. */
 
 /* Define manual flag settings */
 
-short int nAdventure = 0;							/* append adventure code when non-zero. */
-short int nMarquee = 0;								/* enable Marquee loading (engine doesn't init video mode) */
+int nAdventure = 0;							/* append adventure code when non-zero. */
+int nMarquee = 0;								/* enable Marquee loading (engine doesn't init video mode) */
+int nMetablocks = 0;							/* append crumbling blocks code */
+int nHwspritecollisions = 0;
+int nTVFreq = 0;
+int nFXRELATIVE = 0;							/* No relative volume for SFX */
+int nFXMODE = 0;								/* Single channel for SFX */
+int nFXCHANNEL = 1;				      			/* Channel C */
 
 /* Define compiler flag settings */
 
@@ -1015,12 +1062,16 @@ short int nDigging = 0;								/* append digging code when non-zero. */
 short int nCollectables = 0;						/* append collectable blocks code when non-zero. */
 short int nObject = 0;								/* append object code */
 short int nLadder = 0;								/* append ladder code */
-short int nBeeper = 0;
-short int nMusic = 0;
-short int nSfx = 0;
-short int nAYFXRELATIVE = 0;
+short int nBeeper = 0;								/* append Beeper code */
+short int nMusic = 0;								/* append Music (PT3 tracker) code */
+short int nSfx = 0;									/* append SFX (ayFX player) code */
+short int nCrumbling = 0;							/* append crumbling blocks code */
+short int nUser = 0;							    /* append user routines code */
+short int nThrust = 0;							    /* append thrust routine code */
 
-/* Define flag settings */
+unsigned char maxpages = 0;
+unsigned short int pagesize = 16384;
+unsigned short int dskmaxsize = 58480;
 
 FILE *pObject;												/* output file. */
 FILE *pEngine;												/* engine source file. */
@@ -1033,14 +1084,16 @@ FILE *pWorkObj;												/* objects work file. */
 FILE *pConfig;									/* game.cfg flag settings file. */
 
 SongsData songs;
+ScreensData screens;
 
 /* Functions */
 int main( int argc, char * const argv[] )
 {
-	short int nChr = 0;
-	short int nTmp;
+	/* short int nChr = 0; */
+	/* short int nTmp; */
 	FILE *pSource;
-	char szEngineFilename[ 14 ] = { "enginemsx.asm" };
+	char szEngineFilename[ 32 ] = { "EngineMSX.asm" };
+    char szProgramName[ 64 ];
 	char szSourceFilename[ 128 ];
 	char szObjectFilename[ 128 ];
 	char szWorkFile1Name[ 128 ];
@@ -1052,22 +1105,24 @@ int main( int argc, char * const argv[] )
 	char szConfigFileName[ 13 ] = { "" };
 	songs.number = 0;
 	songs.maxsize = 0;
-	
+
 	char cTemp;
 	char *cChar;
 	/* char chData[ 1 ]; */
 	char cFlagString[ 128 ];
 	short int nFlagStringSize;							/* source pointer. */
-    int s, opt; 
-	
+    /* int s; */
+    int opt;
+
 	cChar = &cTemp;
 
-	puts( "AGD Compiler for MSX1 Version 0.7.3" );
-	puts( "(C) Jonathan Cauldwell March 2019" );
+	puts( "AGD Compiler Version 0.7.10" );
+	puts( "(C) Jonathan Cauldwell May 2020" );
+	puts( "MSX1 Version by jltursan January 2021\n" );
 
 	if ( argc < 2 )
 	{
-		fputs( "Usage: CompilerMSX <ProjectName[.agd]>\neg: CompilerMSX TEST\n", stderr );
+		usage();
 	    // invalid number of command line arguments
 		exit ( 1 );
 	}
@@ -1075,46 +1130,112 @@ int main( int argc, char * const argv[] )
 	cSingleEvent = 0;
 	nEvent = -1;
 	nMessageNumber = 0;
-  
+
+    strcpy( szProgramName, argv[1]);
+
+	static struct option long_options[] =
+	{
+	    {"adventure", no_argument, &nAdventure, 1},
+	    {"metablocks", no_argument, &nMetablocks, 1},
+	    {"marquee", no_argument, &nMarquee, 1},
+	    {"hwcollisions", no_argument, &nHwspritecollisions, 1},
+        {"fxrelative", no_argument, &nFXRELATIVE, 1},
+        {"fxdynamic", no_argument, &nFXMODE, 1},
+        {"fxchannel", required_argument, &nFXCHANNEL, 's'},
+	    {"tvfreq", required_argument, &nTVFreq, 'f'},
+	    {"cart", required_argument, NULL, 'r'},
+	    {"disk", required_argument, NULL, 'd'},
+	    {"tape", required_argument, NULL, 'k'},
+	    {"help", no_argument, NULL, 'h'},
+	    {NULL, 0, NULL, 0}
+	};
+	int option_index = 0;
 	while (optind < argc) {
-  		if ((opt = getopt(argc, argv, ":aqc:d:k:sh")) != -1) {
-    		// Option argument
-	    	switch (opt) {
+		if ( (opt = getopt_long(argc, argv, ":amqclys:f:r:d:k:h", long_options, &option_index)) != -1 ) {
+			switch(opt) {
+		        case 0:
+					/* If this option set a flag, do nothing else now. */
+					if (long_options[option_index].flag != 0) break;
+					printf ("option %s", long_options[option_index].name);
+					if (optarg)	printf (" with arg %s", optarg);
+					printf ("\n");
+					break;
 		        case 'a':
-					printf("Adventure mode set!\n");
-					nAdventure = 1;  
-	                break;		        
-		        case 'q': 
-					printf("Marquee mode set!\n");
-					nMarquee = 1;  
-	                break;		        
+					nAdventure = 1;
+	                break;
+		        case 'm':
+					nMetablocks = 1;
+	                break;
+		        case 'q':
+					nMarquee = 1;
+	                break;
 		        case 'c':
+					nHwspritecollisions = 1;
+	                break;
+		        case 'l':
+					nFXRELATIVE = 1;
+	                break;
+		        case 'y':
+					nFXMODE = 1;
+	                break;
+		        case 's':
+	                nFXCHANNEL=atoi(optarg);
+	                if ( nFXCHANNEL < 1 && nFXCHANNEL > 3 ) {
+                        fputs( "Invalid PSG channel. Valid values are: 1 (C channel), 2 (B channel) or 3 (A channel)", stderr );
+                        exit ( 1 );
+	                }
+	                break;
+		        case 'f':
+	                nTVFreq=atoi(optarg);
+	                switch(nTVFreq)
+	                {
+	                	case 0:
+							printf("Default TV frequency selected.\n");
+	                		break;
+	                	case 50:
+							printf("50Hz TV frequency selected!\n");
+	                		break;
+	                	case 60:
+							printf("60Hz TV frequency selected!\n");
+	                		break;
+	                	default:
+							fputs( "Invalid TV frequency. Valid values are: 0 (machine default)), 50 (50Hz) or 60 (60 Hz)", stderr );
+							exit ( 1 );
+					}
+		            break;
+		        case 'r':
 	                nMode=ROM;
 	                nOutputSize=atoi(optarg);
-	                switch(nOutputSize) 
+	                switch(nOutputSize)
 	                {
 	                	case 48:
 	                		nStartAddress=0x0000;
+	                		maxpages = 3;
 	                		break;
 	                	case 32:
+	                		nStartAddress=0x4000;
+	                		maxpages = 2;
+	                		break;
 	                	case 16:
 	                		nStartAddress=0x4000;
+	                		maxpages = 1;
 	                		break;
 	                	default:
 							fputs( "Invalid number of ROM pages. Valid values are: 48, 32, or 16\n", stderr );
 						    // invalid number of command line arguments
-							exit ( 1 );	                		
+							exit ( 1 );
 					}
 	                printf("Cartridge mode selected. ROM size: %sK\n", optarg);
 		            break;
 		        case 'd':
 	                nMode=DISK;
 	                nOutputSize=atoi(optarg);
-	                switch(nOutputSize) 
+                    maxpages = 1;
+	                switch(nOutputSize)
 	                {
-	                	/* case 64:
-	                		nStartAddress=0x0000;
-	                		break; */
+	                	case 64:
+                            nStartAddress=0x0000;
+                            break;
 	                	case 48:
 	                		nStartAddress=0x4000;
 	                		break;
@@ -1125,75 +1246,63 @@ int main( int argc, char * const argv[] )
 	                		nStartAddress=0xC080;
 	                		break;
 	                	default:
-							fputs( "Invalid number of RAM KBs. Valid values are: 48, 32, or 16\n", stderr );
-						    // invalid number of command line arguments
-							exit ( 1 );	                		
+							fputs( "Invalid number of RAM KBs. Valid values are: 64, 48, 32, or 16\n", stderr );
+							exit ( 1 );
 					}
-	                printf("Disk mode selected. RAM KBs enabled: %sK\n", optarg);  
+	                printf("Disk mode selected. RAM KBs enabled: %sK\n", optarg);
 		            break;
 		        case 'k':
-	                printf("Tape mode selected. RAM pages: %s\n", optarg);  
 	                nMode=TAPE;
-					nStartAddress=0x8080;  
+	                nOutputSize=atoi(optarg);
+                    maxpages = 1;
+	                switch(nOutputSize)
+	                {
+	                	case 64:
+                            nStartAddress=0x0000;
+                            break;
+	                	case 48:
+	                		nStartAddress=0x4000;
+	                		break;
+	                	case 32:
+	                		nStartAddress=0x8080;
+	                		break;
+	                	case 16:
+	                		nStartAddress=0xC080;
+	                		break;
+	                	default:
+							fputs( "Invalid number of RAM KBs. Valid values are: 48 or 32\n", stderr );
+							exit ( 1 );
+					}
+	                printf("Tape mode selected. RAM KBs enabled: %sK\n", optarg);
 		            break;
-		        case 'h': 
-					fputs( "Usage: CompilerMSX ProjectName\neg: CompilerMSX TEST\n", stderr );
+		        case 'h':
+					usage();
 				    // invalid number of command line arguments
 					exit ( 1 );
-				case ':':  
-					printf("Error. Missing parameter!\n");  
-					break;  
-				case '?':  
-					printf("unknown option: %c\n", optopt); 
-					break;  		        
+				case ':':
+					printf("Error: Missing parameter in option %s\n", argv[optind-1]);
+					break;
+				case '?':
+					printf("unknown option: %c\n", optopt);
+					break;
 				default:
-		            break;
-	        }
+		            printf("?? getopt returned character code 0%o ??\n", opt);
+		    }
 	    } else {
 	        // Regular argument
-	       // printf("option = %s\n",argv[optind]);
+            /* printf("Regular arg(%d):<%s>\n", optind, argv[optind]); */
 	        optind++;  // Skip to the next argument
 	    }
 	}
-      
 
-	/* exit(0); */
-	
-/*    
-	if ( argc >= 2 && argc <= 3 )
-	{
-		cSingleEvent = 0;
-		nEvent = -1;
-		nMessageNumber = 0;
-	}
-	else
-	{
-		fputs( "Usage: CompilerMSX ProjectName\neg: CompilerMSX TEST\n", stderr );
-	    // invalid number of command line arguments
-		exit ( 1 );
-	}
-
-	if ( argc == 3 )
-	{
-		if ( argv[ 2 ][ 0 ] == '-' || argv[ 2 ][ 0 ] == '/' )
-		{
-			switch( argv[ 2 ][ 1 ] )
-			{
-				case 's':
-				case 'S':
-					nAssembler = 1;
-					break;
-				default:
-					fputs( "Unrecognised switch", stderr );
-					exit ( 1 );
-					break;
-			}
-		}
-	}
-*/
+	if (nAdventure) printf("Adventure mode set!\n");
+	if (nMetablocks) printf("Metablocks mode set!\n");
+	if (nMarquee) printf("Marquee mode set!\n");
+	if (nHwspritecollisions) printf("HW sprite collisions mode set!\n");
 
 	/* Open target files. */
-	sprintf( szObjectFilename, "%s.asm", argv[ 1 ], nEvent );
+	/*sprintf( szObjectFilename, "%s.asm", argv[ 1 ], nEvent );*/
+    sprintf( szObjectFilename, "%s.asm", szProgramName);
 	pObject = fopen( szObjectFilename, "wb" );
 
 	if ( !pObject )
@@ -1202,7 +1311,7 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile1Name, "%s.txt", argv[ 1 ] );
+	sprintf( szWorkFile1Name, "%s.txt", szProgramName );
 	pWorkMsg = fopen( szWorkFile1Name, "wb" );
 	if ( !pWorkMsg )
 	{
@@ -1210,7 +1319,7 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile2Name, "%s.blk", argv[ 1 ] );
+	sprintf( szWorkFile2Name, "%s.blk", szProgramName );
 	pWorkBlk = fopen( szWorkFile2Name, "wb" );
 	if ( !pWorkBlk )
 	{
@@ -1218,7 +1327,7 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile3Name, "%s.spr", argv[ 1 ] );
+	sprintf( szWorkFile3Name, "%s.spr", szProgramName );
 	pWorkSpr = fopen( szWorkFile3Name, "wb" );
 	if ( !pWorkSpr )
 	{
@@ -1226,7 +1335,7 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile4Name, "%s.scl", argv[ 1 ] );
+	sprintf( szWorkFile4Name, "%s.scl", szProgramName );
 	pWorkScr = fopen( szWorkFile4Name, "wb" );
 	if ( !pWorkScr )
 	{
@@ -1234,16 +1343,16 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile5Name, "%s.nme", argv[ 1 ] );
+	sprintf( szWorkFile5Name, "%s.nme", szProgramName );
 	pWorkNme = fopen( szWorkFile5Name, "wb" );
 	if ( !pWorkNme )
 	{
-		
+
        	fprintf( stderr, "Unable to create work file: %s\n", szWorkFile5Name );
 		exit ( 1 );
 	}
 
-	sprintf( szWorkFile6Name, "%s.ojt", argv[ 1 ] );
+	sprintf( szWorkFile6Name, "%s.ojt", szProgramName );
 	pWorkObj = fopen( szWorkFile6Name, "wb" );
 	if ( !pWorkObj )
 	{
@@ -1253,65 +1362,112 @@ int main( int argc, char * const argv[] )
 
 	fprintf( pObject, "ifexists game.cfg\n" );
 	fprintf( pObject, "include game.cfg\n" );
-	fprintf( pObject, "endif\n" );
+	fprintf( pObject, "endif\n\n" );
 
 	if ( nMode == ROM )
 	{
-		fprintf( pObject, "       output %s.rom\n\n", argv[ 1 ] );
-		fprintf( pObject, "       org $%0X\n\n", nStartAddress );
-		fprintf( pObject, "       db $41,$42\n" );
-		fprintf( pObject, "       dw main,0,0,0,0,0,0\n" );
-		fprintf( pObject, "\nmain:\n" );
-		
-		fprintf( pObject, "	if (DISTYPE=0 and DISSIZE=32)\n" );
-		fprintf( pObject, "		call MSX_RSLREG		;read primary slot #\n" );
-		fprintf( pObject, "		rrca				;move page1 info to bit 0,1\n" );
-		fprintf( pObject, "		rrca\n" );
-		fprintf( pObject, "		and	00000011b\n" );
-		fprintf( pObject, "		ld	c,a\n" );
-		fprintf( pObject, "		ld	b,0\n" );
-		fprintf( pObject, "		ld	hl,MSX_EXPTBL	;see if this slot is expanded or not\n" );
-		fprintf( pObject, "		add	hl,bc\n" );
-		fprintf( pObject, "		ld	a,(hl)			;see if the slot is expanded or not\n" );
-		fprintf( pObject, "		and	$80\n" );
-		fprintf( pObject, "		or	c				;set msb if so\n" );
-		fprintf( pObject, "		ld	c,a				;save it to [c]\n" );
-		fprintf( pObject, "		inc	hl				;point to slttbl entry\n" );
-		fprintf( pObject, "		inc	hl\n" );
-		fprintf( pObject, "		inc	hl\n" );
-		fprintf( pObject, "		inc	hl\n" );
-		fprintf( pObject, "		ld	a,(hl)			;get what is currently output to expansion slot register\n" );
-		fprintf( pObject, "		and	$0C				;expanded info for page2\n" );
-		fprintf( pObject, "		or	c				;finally form slot address\n" );
-		fprintf( pObject, "		ld	h,$80\n" );
-		fprintf( pObject, "		call MSX_ENASLT		;enable page 2\n" );
-		fprintf( pObject, "	endif\n" );
-		fprintf( pObject, "		jp start\n" );
-
-		
-	} 
+		fprintf( pObject, "    output %s.rom\n\n", szProgramName );
+		fprintf( pObject, "PageSize	equ	$%0X\n\n", pagesize );
+		for ( int i = 0; i < maxpages; i++ ) {
+            fprintf( pObject, "    defpage %d, $%04X, PageSize\n", i, nStartAddress+(pagesize*i) );
+		}
+		if ( nOutputSize == 48 ) {
+            fprintf( pObject, "define NOBIOS\n\n" );
+            fprintf( pObject, "\n    code @ $0000, #1, page 0\n\n" );
+            fprintf( pObject, "        block $38,0\n" );
+            fprintf( pObject, "        jp MSX_HTIMI\n\n" );
+            fprintf( pObject, "    code @ $4000, #1, page 1\n\n" );
+		} else {
+            fprintf( pObject, "\n    code @ $4000, #1, page 0\n\n" );
+		}
+		fprintf( pObject, "        db $41,$42\n" );
+		if ( nOutputSize == 16 ) {
+            fprintf( pObject, "        dw start\n" );
+            fprintf( pObject, "        ds 12\n\n" );
+            fprintf( pObject, "        include \"MSX_Defs.asm\"\n" );
+            fprintf( pObject, "        include \"MSX_Macros.asm\"\n\n" );
+		} else {
+            fprintf( pObject, "        dw init\n" );
+            fprintf( pObject, "        ds 12\n\n" );
+            fprintf( pObject, "    include \"MSX_Defs.asm\"\n" );
+            fprintf( pObject, "    include \"MSX_Macros.asm\"\n\n" );
+            fprintf( pObject, "init:\n" );
+            fprintf( pObject, "        call MSX_RSLREG		;read primary slot #\n" );
+            fprintf( pObject, "        rrca				;move page1 info to bit 0,1\n" );
+            fprintf( pObject, "        rrca\n" );
+            fprintf( pObject, "        and 3\n" );
+            fprintf( pObject, "        ld c,a\n" );
+            fprintf( pObject, "        add a,MSX_EXPTBL&255\n" );
+            fprintf( pObject, "        ld l,a\n" );
+            fprintf( pObject, "        ld h,MSX_EXPTBL>>8\n" );
+            fprintf( pObject, "        ld a,(hl)			;see if the slot is expanded or not\n" );
+            fprintf( pObject, "        and $80\n" );
+            fprintf( pObject, "        or c				;set msb if so\n" );
+            fprintf( pObject, "        ld c,a				;save it to [c]\n" );
+            fprintf( pObject, "        inc l\n" );
+            fprintf( pObject, "        inc l\n" );
+            fprintf( pObject, "        inc l\n" );
+            fprintf( pObject, "        inc l				;point to slttbl entry\n" );
+            fprintf( pObject, "        ld a,(hl)			;get what is currently output to expansion slot register\n" );
+            fprintf( pObject, "        and $0C				;expanded info for page2\n" );
+            fprintf( pObject, "        or c				;finally form slot address\n" );
+            fprintf( pObject, "    if (DISSIZE=48)\n" );
+            fprintf( pObject, "        push af\n" );
+            fprintf( pObject, "        ld h,$80\n" );
+            fprintf( pObject, "        call MSX_ENASLT		;enable page 2\n" );
+            fprintf( pObject, "        ld hl,0\n" );
+            fprintf( pObject, "        ld de,biosvars\n" );
+            fprintf( pObject, "        ld bc,$0038\n" );
+            fprintf( pObject, "        ldir\n" );
+            fprintf( pObject, "        ld a,(MSX_CHGCPU)\n" );
+            fprintf( pObject, "        cp $C3\n" );
+            fprintf( pObject, "        ld a,$81\n" );
+            fprintf( pObject, "        call z,MSX_CHGCPU		; if turbo available, set it\n" );
+            fprintf( pObject, "        pop af\n" );
+            fprintf( pObject, "        ld h,$00\n" );
+            fprintf( pObject, "        call MSX_ENASLT\n" );
+            fprintf( pObject, "    else\n" );
+            fprintf( pObject, "        ld h,$80\n" );
+            fprintf( pObject, "        call MSX_ENASLT		;enable page 2\n" );
+            fprintf( pObject, "    endif\n" );
+            fprintf( pObject, "        jp start\n" );
+		}
+	}
 	else
 	{
-		fprintf( pObject, "       output %s.bin\n\n", argv[ 1 ] );
-		fprintf( pObject, "       org $%0X\n\n", nStartAddress );
-		fprintf( pObject, "\nmain: jp start\n" );
+		fprintf( pObject, "    output %s.bin\n\n", szProgramName );
+        fprintf( pObject, "    defpage 0, $%04X\n", nStartAddress );
+		if ( nOutputSize == 64 ) {
+            fprintf( pObject, "\ndefine NOBIOS\n" );
+            fprintf( pObject, "\n    code @ $0000\n\n" );
+            fprintf( pObject, "main:\n" );
+            fprintf( pObject, "        block $38,0\n" );
+            fprintf( pObject, "        jp MSX_HTIMI\n\n" );
+            fprintf( pObject, "    code @ $4000\n\n" );
+		} else {
+            fprintf( pObject, "\n    code @ $%04X\n\n", nStartAddress );
+            fprintf( pObject, "main:\n" );
+		}
+		fprintf( pObject, "        jp start\n\n" );
+        fprintf( pObject, "        include \"MSX_Defs.asm\"\n" );
+        fprintf( pObject, "        include \"MSX_Macros.asm\"\n" );
 	}
-              
+
 	/* Find the engine. */
 	pEngine = fopen( szEngineFilename, "r" );
 	if ( !pEngine )
 	{
-		fputs( "Cannot find enginemsx.asm\n", stderr );
+		fputs( "Cannot find EngineMSX.asm\n", stderr );
 		exit ( 1 );
 	}
 
 	/* Copy the engine to the target file. */
-/*	lSize = fread( chData, 1, 1, pEngine );		
+/*	lSize = fread( chData, 1, 1, pEngine );
 
 	while ( lSize > 0 )
 	{
-		fwrite( chData, 1, 1, pObject );			
-		lSize = fread( chData, 1, 1, pEngine );		
+		fwrite( chData, 1, 1, pObject );
+		lSize = fread( chData, 1, 1, pEngine );
 	} */
 
 	/* Allocate buffer for the target code. */
@@ -1324,7 +1480,7 @@ int main( int argc, char * const argv[] )
 	}
 
 	/* Process single file. */
-	sprintf( szSourceFilename, "%s.agd", argv[ 1 ] );
+	sprintf( szSourceFilename, "%s.agd", szProgramName );
 	printf( "Sourcename: %s\n", szSourceFilename );
 
 	/* Open source file. */
@@ -1362,6 +1518,7 @@ int main( int argc, char * const argv[] )
 		/* user particle routine not defined, put a ret here. */
 		if ( nParticle == 0 )
 		{
+		    define_page();
 			WriteInstructionAndLabel( "ptcusr ret" );
 		}
 
@@ -1372,10 +1529,10 @@ int main( int argc, char * const argv[] )
 		}
 
 		fwrite( cStart, 1, nCurrent - nAddress, pObject );	/* write output to file. */
-	}
-
-
-
+	} else {
+       	fprintf( stderr, "Unable to read agd file: %s\n", szSourceFilename );
+        exit(1);
+    }
 
 	/* output textfile messages to assembly. */
 	fclose( pWorkMsg );
@@ -1589,6 +1746,7 @@ int main( int argc, char * const argv[] )
 	/* Read file into the buffer. */
 	lSize = fread( cBuff, 1, lSize, pWorkObj );
 
+	/* Objects are define slightly different between RAM & ROM models */
 	if ( nMode == ROM ) {
 		CreateObjectsROM();
 	} else {
@@ -1615,7 +1773,11 @@ int main( int argc, char * const argv[] )
 	/* Copy the engine to the target file. */
 	lSize = fread( cChar, 1, 1, pEngine );			/* read first character of engine source. */
 
-	fprintf( pObject, "\n\n" );
+	if ( nMode == ROM ) {
+        fprintf( pObject, "\n\n    page 0..%d\n\n", maxpages-1 );
+	} else {
+        fprintf( pObject, "\n\n" );
+	}
 
 	while ( lSize > 0 )
 	{
@@ -1649,7 +1811,7 @@ int main( int argc, char * const argv[] )
 // game.cfg output
 
 	puts( "game.cfg created .... \n" );
-	sprintf( szConfigFileName, "game.cfg", argv[ 1 ] );
+	sprintf( szConfigFileName, "game.cfg" );
 	pConfig = fopen( szConfigFileName, "wb" );
 	if ( !pConfig )
 	{
@@ -1657,15 +1819,13 @@ int main( int argc, char * const argv[] )
 		exit ( 1 );
 	}
 
-	
-	
-	nFlagStringSize = sprintf( cFlagString, "; Flags saved by AGD Compiler\r\n" );	
-  	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write aflag to game.cfg. */  	
+	nFlagStringSize = sprintf( cFlagString, "; Flags saved by AGD Compiler\r\n" );
+  	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write aflag to game.cfg. */
 	nFlagStringSize = sprintf( cFlagString, "\r\nDISTYPE=%d ; Memory model & size", nMode );
   	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write aflag to game.cfg. */
 	nFlagStringSize = sprintf( cFlagString, "\r\nDISSIZE=%d ; Memory size", nOutputSize );
   	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write aflag to game.cfg. */
-  	
+
 	nFlagStringSize = sprintf( cFlagString, "\r\nAFLAG=%d ; Adventure mode", nAdventure );
 	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write mflag to game.cfg. */
 	nFlagStringSize = sprintf( cFlagString, "\r\nMFLAG=%d ; Menu/Inventory", nMenu );
@@ -1690,7 +1850,23 @@ int main( int argc, char * const argv[] )
 	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
 	nFlagStringSize = sprintf( cFlagString, "\r\nQFLAG=%i ; Marquee", nMarquee );
 	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
-	nFlagStringSize = sprintf( cFlagString, "\r\nAYFXRELATIVE=%i ; Relative SFX volume", nAYFXRELATIVE );
+	nFlagStringSize = sprintf( cFlagString, "\r\nCRFLAG=%i ; Crumbling blocks", nCrumbling );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nMBFLAG=%i ; Metablocks", nMetablocks );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nUFLAG=%i ; User routines", nUser );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nRTFLAG=%i ; Thrust for rotational control", nThrust );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nHCFLAG=%i ; HW sprite collisions", nHwspritecollisions );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nTVFREQ=%i ; TV Mode", nTVFreq );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nFX_RELATIVE=%i ; Relative SFX volume", nFXRELATIVE );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nFX_MODE=%i ; SFX replayer mode (0 = fixed channel, 1 = dynamic channel)", nFXMODE );
+	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
+	nFlagStringSize = sprintf( cFlagString, "\r\nFX_CHANNEL=%i ; SFX fixed channel", nFXCHANNEL );
 	fwrite( &cFlagString, 1, nFlagStringSize, pConfig );					/* write lflag to game.cfg. */
 	fclose( pConfig );
 
@@ -1701,11 +1877,11 @@ int main( int argc, char * const argv[] )
 void StartEvent( unsigned short int nEvent )
 {
 	unsigned short int nCount;
-	unsigned char cLine[ 14 ];
+	unsigned char cLine[ 36 ];
 	unsigned char *cChar = cLine;
 
 //	printf("StartEvent(): Starting %d event...\n",nEvent);
-	
+
 	*cChar = 0;
 	/* reset compilation address. */
 	nCurrent = nAddress;
@@ -1719,9 +1895,17 @@ void StartEvent( unsigned short int nEvent )
 	}
 
 	cObjt = cStart + ( nCurrent - nAddress );
-	if ( nEvent < 99 )
+	if ( nEvent < NUM_EVENTS )
 	{
-		sprintf( cLine, "\nevnt%02d equ $", nEvent );		/* don't write label for dummy event. */
+	    if ( nMode == ROM ) {
+            sprintf( cLine, "\n\n    page 0..%d\n\nevnt%02d:	equ $", maxpages-1, nEvent );		/* don't write label for dummy event. */
+	    } else {
+            if ( maxpages > 1) {
+                sprintf(cLine,"\n\n    page 0..%d\n\nevnt%02d:	equ $", maxpages-1, nEvent );
+            } else {
+                sprintf(cLine,"\n\n    page %d\n\nevnt%02d:	equ $", maxpages-1, nEvent );
+            }
+	    }
 	}
 
 	while ( *cChar )
@@ -1739,7 +1923,7 @@ void StartEvent( unsigned short int nEvent )
 	ResetIf();
 
 	/* Reset number of DATA statement elements. */
-	nList[ nEvent ] = 0;
+	if ( nEvent < NUM_EVENTS ) nList[ nEvent ] = 0;
 	cData = 0;
 	cDataRequired = 0;
 
@@ -1751,7 +1935,7 @@ void StartEvent( unsigned short int nEvent )
 		nWhileBuff[ nCount ][ 1 ] = 0;
 		nWhileBuff[ nCount ][ 2 ] = 0;
 	}
-		
+
 	/* printf("StartEvent(): Done!\n"); */
 }
 
@@ -1778,11 +1962,12 @@ void BuildFile( void )
 		{
 //			printf("Compiling keyword %d...\n",nKeyword);
 			Compile( nKeyword );
-		} 
+		}
 //		else {
 //			printf("Invalid keyword %d!\n",nKeyword);
 //		}
 	}
+
 	while ( cBufPos < ( cBuff + lSize ) );
 
 	if ( nEvent >= 0 && nEvent < NUM_EVENTS )
@@ -1838,8 +2023,8 @@ void CreateMessages( void )
 {
 	unsigned char *cSrc;									/* source pointer. */
 	short int nStart = 1;
-	int z;
-	
+	/* int z; */
+
 	/* Set up source address. */
 	cSrc = cBufPos;
 
@@ -1848,7 +2033,10 @@ void CreateMessages( void )
 	nNextLabel = 0;
 
 	cObjt = cStart + ( nCurrent - nAddress );
-	WriteText( "\nmsgdat equ $" );
+
+	define_page();
+
+	WriteText( "\nmsgdat:	equ $" );
 
 	while ( ( cSrc - cBuff ) < lSize )
 	{
@@ -1858,7 +2046,7 @@ void CreateMessages( void )
 			{
 				if ( nStart )
 				{
-					WriteText( "\n       defb " );			/* single defb */
+					WriteText( "\n       db " );			/* single db */
 				}
 				else
 				{
@@ -1866,7 +2054,7 @@ void CreateMessages( void )
 				}
 				WriteNumber( *cSrc++ );						/* write as numeric outside quotes */
 				if ( *cSrc == 10 ) {
-					cSrc++;	
+					cSrc++;
 				}
 				nStart = 1;
 			}
@@ -1874,7 +2062,7 @@ void CreateMessages( void )
 			{
 				if ( nStart )
 				{
-					WriteText( "\n       defb \"" );			/* start of text message */
+					WriteText( "\n       db \"" );			/* start of text message */
 					nStart = 0;
 				}
 				*cObjt = *cSrc++;
@@ -1882,10 +2070,10 @@ void CreateMessages( void )
 				nCurrent++;
 			}
 		}
-		
+
 		if ( nStart )
 		{
-			WriteText( "\n       defb " );					/* single defb */
+			WriteText( "\n       db " );					/* single db */
 		}
 		else
 		{
@@ -1897,7 +2085,7 @@ void CreateMessages( void )
 	}
 
 	/* Number of messages */
-	WriteText( "\nnummsg defb " );
+	WriteText( "\nnummsg db " );
 	WriteNumber( nMessageNumber );
 }
 
@@ -1916,15 +2104,17 @@ void CreateBlocks( void )
 	nCurrent = nAddress;
 	nNextLabel = 0;
 
+    define_page();
+
 	cObjt = cStart + ( nCurrent - nAddress );
-	WriteText( "\nchgfx  equ $" );
+	WriteText( "\nchgfx:	equ $" );
 
 	do
 	{
-		WriteText( "\n       defb " );						/* start of text message */
+		WriteText( "\n       db " );						/* start of text message */
 		nData = 0;
 		cType[ nCounter ] = *cSrc++;						/* store type in array. */
-		while ( nData++ < 15 )
+		while ( nData++ < BLOCK_SIZE-1 )
 		{
 			WriteNumber( *cSrc++ );							/* write byte of data */
 			WriteText( "," );								/* put a comma */
@@ -1940,7 +2130,7 @@ void CreateBlocks( void )
 	nData = 0;
 	while ( nData < nCounter )
 	{
-		WriteText( "\n       defb " );
+		WriteText( "\n       db " );
 		WriteNumber( cType[ nData++ ] );
 	}
 }
@@ -1964,8 +2154,10 @@ void CreateSprites( void )
 	nCurrent = nAddress;
 	nNextLabel = 0;
 
+    define_page();
+
 	cObjt = cStart + ( nCurrent - nAddress );
-	WriteText( "\nsprgfx equ $" );
+	WriteText( "\nsprgfx:	equ $" );
 	cSrc = cBufPos;
 
 	do
@@ -1974,13 +2166,13 @@ void CreateSprites( void )
 		cBufPos = cSrc;
 
 		for ( nFrame = 0; nFrame < cFrames[ nCounter ]; nFrame++ )
-		{	
+		{
 			for ( nShifts = 0; nShifts < 1; nShifts++ )			/* MSX: no shifts */
 			{
 				cSrc = cBufPos;
-				WriteText( "\n       defb " );						/* start of text message */
+				WriteText( "\n       db " );						/* start of text message */
 				nData = 0;
-				while ( nData++ < 16 )
+				while ( nData++ < SPRITE_SIZE/2 )
 				{
 					cByte[ 0 ] = *cSrc++;
 					cByte[ 1 ] = *cSrc++;
@@ -1998,7 +2190,7 @@ void CreateSprites( void )
 					WriteNumber( cByte[ 0 ] );						/* write byte of data */
 					WriteText( "," );								/* put a comma */
 					WriteNumber( cByte[ 1 ] );						/* write byte of data */
-					if ( nData < 16 )
+					if ( nData < SPRITE_SIZE/2 )
 					{
 						WriteText( "," );							/* more to come; put a comma */
 					}
@@ -2018,8 +2210,8 @@ void CreateSprites( void )
 	nFrame = 0;
 	while ( nData < nCounter )
 	{
-//		WriteText( "\n       defb " );
-		WriteInstruction( "defb " );
+//		WriteText( "\n       db " );
+		WriteInstruction( "db " );
 		WriteNumber( nFrame );
 		WriteText( "," );
 		WriteNumber( cFrames[ nData ] );
@@ -2031,29 +2223,178 @@ void CreateSprites( void )
 	WriteText( ",0" );
 }
 
+void PLETTER_pack(short int numScreen, unsigned char *cPtr) {
+
+	unsigned int nBytes = screens.unpackedSize;
+
+    /*
+	FILE *outfile;
+	char sOutput[128];
+    */
+
+    screens.data[numScreen-1].ptr = pletter_encode(numScreen, cPtr, &nBytes);
+    screens.data[numScreen-1].packedSize = nBytes;
+    // printf("\\______ Packed size (nBytes) : %d\n", nBytes);
+
+    /*
+    sprintf(sOutput,"screen%0d.pck", numScreen);fh
+	if ((outfile  = fopen(sOutput, "wb")) == NULL)
+	{
+		printf("? %s\n", sOutput);
+		exit (1);
+	}
+	fwrite(screens.data[numScreen-1].ptr,1,screens.data[numScreen-1].packedSize,outfile);
+	fclose(outfile);
+    */
+
+}
+
+void RLE_pack(short int numScreen, unsigned char *cPtr) {
+    short int nCount;
+    short int nByte;
+	short int nFirstByte;
+    short int pos = 0;
+	short int nBytes = screens.unpackedSize;
+	unsigned char *pckPtr;
+	unsigned char data_dest[nBytes];
+
+    /*
+	FILE *outfile;
+	char sOutput[128];
+    */
+
+    while ( nBytes > 0 )
+    {
+        nCount = 0;
+        nFirstByte = *cPtr;									/* fetch first byte. */
+        do
+        {
+            nByte = *++cPtr;
+            nCount++;										/* count the bytes. */
+            nBytes--;
+        } while ( nByte == nFirstByte && nCount < 256 && nBytes > 0 );
+        if ( nCount > 3 ) {
+            data_dest[pos++] = 255;
+            data_dest[pos++] = nFirstByte;
+            data_dest[pos++] = (nCount & 255);
+        } else {
+            while ( nCount-- > 0 ) {
+                data_dest[pos++] = nFirstByte;
+            }
+        }
+    }
+    // printf("\\______ Packed size (pos) : %d\n", pos);
+
+    // After compressing, initialices packed data struct
+    pckPtr = (unsigned char *)malloc(pos);
+    memcpy(pckPtr, data_dest, pos);
+    screens.data[numScreen-1].packedSize = pos;
+    screens.data[numScreen-1].ptr = pckPtr;
+
+    /*
+    sprintf(sOutput,"screen%0d.pck", numScreen);
+	if ((outfile  = fopen(sOutput, "wb")) == NULL)
+	{
+		printf("? %s\n", sOutput);
+		exit (1);
+	}
+	fwrite(screens.data[numScreen-1].ptr,1,screens.data[numScreen-1].packedSize,outfile);
+	fclose(outfile);
+    */
+}
+
+void CreateScreens( void )
+{
+	short int nColumn;
+	short int nCount;
+	short int nThisScreen = 0;
+	unsigned char *cSrc;										// source pointer.
+    unsigned char *cPtr;
+
+	// Set up source address.
+	cSrc = cBufPos;
+
+	// reset compilation address.
+	nCurrent = nAddress;
+	nNextLabel = 0;
+
+	cObjt = cStart + ( nCurrent - nAddress );
+
+	// Compress all screens
+    screens.number = nScreen;
+    screens.unpackedSize = nWinWidth * nWinHeight;
+	while ( nThisScreen++ < nScreen ) {
+		PLETTER_pack(nThisScreen, cSrc);
+		// RLE_pack(nThisScreen, cSrc);
+		// printf("Compressing screen %d...\n", nThisScreen);
+		cSrc += screens.unpackedSize;
+	}
+
+	// write compressed screen sizes
+	define_page();
+
+	WriteText( "\nscdat:	equ $" );
+	nColumn = 99;
+	nThisScreen = 0;
+	while ( nThisScreen < nScreen ) {
+		if ( nColumn > 24 )	{
+			WriteInstruction( "defw " );
+			nColumn = 0;
+		} else {
+			WriteText( "," );
+			nColumn++;
+		}
+		WriteNumber( screens.data[nThisScreen++].packedSize );
+	}
+	// Write screens data
+    nColumn = 99;											// fresh db line for each screen.
+	nThisScreen = 0;
+	while ( nThisScreen < nScreen )	{
+        nCount = 0;
+        cPtr = screens.data[nThisScreen].ptr;
+	    while ( nCount < screens.data[nThisScreen].packedSize ) {
+            if ( nColumn > 30 ) {
+                nColumn = 0;
+                WriteInstruction( "db " );
+            } else {
+                WriteText( "," );
+                nColumn++;
+            }
+            WriteNumber( *cPtr++ );
+            nCount++;
+	    }
+	    nThisScreen++;
+	}
+
+	// Now store the number of screens in the game.
+	WriteText( "\nnumsc  db " );
+	WriteNumber( nScreen );
+}
+
+/*
 void CreateScreens( void )
 {
 	short int nThisScreen = 0;
-	short int nBytes = 0;										/* bytes to write. */
-	short int nByteCount;
+	short int nBytes = 0;										// bytes to write.
+	// short int nByteCount;
 	short int nColumn = 0;
 	short int nCount = 0;
 	short int nByte = 0;
 	short int nFirstByte = -1;
 	short int nScreenSize = 0;
-	unsigned char *cSrc;										/* source pointer. */
+	unsigned char *cSrc;										// source pointer.
 
-	/* Set up source address. */
+	// Set up source address.
 	cSrc = cBufPos;
 
-	/* reset compilation address. */
+	// reset compilation address.
 	nCurrent = nAddress;
 	nNextLabel = 0;
 
 	cObjt = cStart + ( nCurrent - nAddress );
-	WriteText( "\nscdat  equ $" );
+	WriteText( "\nscdat:	equ $" );
 
-	/* write compressed screen sizes */
+	// write compressed screen sizes
 	nColumn = 99;
 
 	while ( nThisScreen++ < nScreen )
@@ -2064,12 +2405,12 @@ void CreateScreens( void )
 		while ( nBytes > 0 )
 		{
 			nCount = 0;
-			nFirstByte = *cSrc;									/* fetch first byte. */
+			nFirstByte = *cSrc;									// fetch first byte.
 
 			do
 			{
 				nByte = *++cSrc;
-				nCount++;										/* count the bytes. */
+				nCount++;										// count the bytes.
 				nBytes--;
 			}
 			while ( nByte == nFirstByte && nCount < 256 && nBytes > 0 );
@@ -2101,25 +2442,25 @@ void CreateScreens( void )
 		WriteNumber( nScreenSize );
 	}
 
-	/* Restore source address. */
+	// Restore source address.
 	cSrc = cBufPos;
 
-	/* Now do the compression. */
+	// Now do the compression.
 	nThisScreen = 0;
 
 	while ( nThisScreen++ < nScreen )
 	{
 		nBytes = nWinWidth * nWinHeight;
-		nColumn = 99;											/* fresh defb line for each screen. */
+		nColumn = 99;											// fresh db line for each screen.
 
 		while ( nBytes > 0 )
 		{
 			nCount = 0;
-			nFirstByte = *cSrc;									/* fetch first byte. */
+			nFirstByte = *cSrc;									// fetch first byte.
 
 			do
 			{
-				nCount++;										/* count the bytes. */
+				nCount++;										// count the bytes.
 				nBytes--;
 				nByte = *++cSrc;
 			}
@@ -2128,7 +2469,7 @@ void CreateScreens( void )
 			if ( nColumn > 32 )
 			{
 				nColumn = 0;
-				WriteInstruction( "defb " );
+				WriteInstruction( "db " );
 			}
 			else
 			{
@@ -2137,11 +2478,11 @@ void CreateScreens( void )
 
 			if ( nCount > 3 )
 			{
-				WriteNumber( 255 );
+				WriteNumber( 255 );     // FLAG RLE
 				WriteText( "," );
-				WriteNumber( nFirstByte );
+				WriteNumber( nFirstByte ); // value
 				WriteText( "," );
-				WriteNumber( nCount & 255 );
+				WriteNumber( nCount & 255 ); // times repeated
 				nColumn += 3;
 			}
 			else
@@ -2157,12 +2498,14 @@ void CreateScreens( void )
 				}
 			}
 		}
+
 	}
 
-	/* Now store the number of screens in the game. */
-	WriteText( "\nnumsc  defb " );
+	// Now store the number of screens in the game.
+	WriteText( "\nnumsc  db " );
 	WriteNumber( nScreen );
 }
+*/
 
 void CreateScreens2( void )
 {
@@ -2193,7 +2536,7 @@ void CreateScreens2( void )
 		{
 			if ( nColumn >= nWinWidth )
 			{
-				WriteInstruction( "defb " );
+				WriteInstruction( "db " );
 				nColumn = 0;
 			}
 			else
@@ -2209,7 +2552,7 @@ void CreateScreens2( void )
 	}
 
 	/* Now store the number of screens in the game. */
-	WriteText( "\nnumsc  defb " );
+	WriteText( "\nnumsc  db " );
 	WriteNumber( nScreen );
 }
 
@@ -2229,8 +2572,10 @@ void CreatePositions( void )
 	nCurrent = nAddress;
 	nNextLabel = 0;
 
+    define_page();
+
 	cObjt = cStart + ( nCurrent - nAddress );
-	WriteText( "\nnmedat defb " );
+	WriteText( "\nnmedat db " );
 	cScrn = *cSrc++;										/* get screen. */
 
 	while ( nPos < nPositions && nThisScreen < nScreen )
@@ -2257,7 +2602,7 @@ void CreatePositions( void )
 			if ( cScrn != nThisScreen )
 			{
 				WriteNumber( 255 );							/* end marker for screen. */
-				WriteInstruction( "defb " );
+				WriteInstruction( "db " );
 //				WriteText( "\n" );
 				nThisScreen++;
 			}
@@ -2288,29 +2633,31 @@ void CreateObjectsRAM( void )
 
 	cObjt = cStart + ( nCurrent - nAddress );
 
+	define_page();
+
 	if ( nObjects == 0 )
 	{
 		nObjects++;
 		WriteText( "\nNUMOBJ equ " );
 		WriteNumber( nObjects );
-		WriteText( "\nobjdta defw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n" );
+		WriteText( "\nobjdta:	defw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n" );
 		WriteText( "       defw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0" );
-		WriteInstruction( "defb 254,0,0,254,0,0" );
+		WriteInstruction( "db 254,0,0,254,0,0" );
 	}
 	else
 	{
 		WriteText( "\nNUMOBJ equ " );
 		WriteNumber( nObjects );
-		WriteText( "\nobjdta equ $" );
+		WriteText( "\nobjdta:	equ $" );
 
 		for ( nCount = 0; nCount < nObjects; nCount++ )
 		{
 			cScrn = *cSrc++;								/* get screen. */
 			cX = *cSrc++;									/* get x. */
 			cY = *cSrc++;									/* get y. */
-			WriteInstruction( "defb " );
+			WriteInstruction( "db " );
 
-			for( nDatum = 0; nDatum < 64; nDatum++ )
+			for( nDatum = 0; nDatum < OBJECT_SIZE; nDatum++ )
 			{
 				cDatum = *cSrc++;
 				WriteNumber( cDatum );
@@ -2336,7 +2683,7 @@ void CreateObjectsRAM( void )
 
 void CreateObjectsROM( void )
 {
-	unsigned char *cSrc;									
+	unsigned char *cSrc;
 	short int nCount = 0;
 	short int nDatum;
 	unsigned char cScrn, cX, cY, cDatum;
@@ -2353,7 +2700,7 @@ void CreateObjectsROM( void )
 		nObjects++;
 		WriteText( "\nNUMOBJ equ " );
 		WriteNumber( nObjects );
-		WriteText( "\nobjdta defb 254,0,0\n" );
+		WriteText( "\nobjdta:	db 254,0,0\n" );
 		WriteText( "       defw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n" );
 		WriteText( "       defw 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0" );
 	}
@@ -2361,14 +2708,14 @@ void CreateObjectsROM( void )
 	{
 		WriteText( "\nNUMOBJ equ " );
 		WriteNumber( nObjects );
-		WriteText( "\nobjdta equ $" );
+		WriteText( "\nobjdta:	equ $" );
 
 		for ( nCount = 0; nCount < nObjects; nCount++ )
 		{
-			cScrn = *cSrc++;								
-			cX = *cSrc++;									
-			cY = *cSrc++;									
-			WriteInstruction( "defb " );
+			cScrn = *cSrc++;
+			cX = *cSrc++;
+			cY = *cSrc++;
+			WriteInstruction( "db " );
 
 			WriteNumber( cScrn );
 			WriteText( "," );
@@ -2376,7 +2723,7 @@ void CreateObjectsROM( void )
 			WriteText( "," );
 			WriteNumber( cY );
 			WriteText( "," );
-			for( nDatum = 0; nDatum < 63; nDatum++ )
+			for( nDatum = 0; nDatum < (OBJECT_SIZE - 1); nDatum++ )
 			{
 				cDatum = *cSrc++;
 				WriteNumber( cDatum );
@@ -2391,8 +2738,10 @@ void CreateObjectsROM( void )
 
 void CreatePalette( void )
 {
+    define_page();
+
 	cPalette = 0;
-	WriteText( "\npalett equ $" );
+	WriteText( "\npalett:	equ $" );
 
 	while ( cPalette < 16 )
 	{
@@ -2416,10 +2765,12 @@ void CreateFont( void )
 
 	if ( nUseFont > 0 )
 	{
-		WriteText( "\nfont   equ $" );
+        define_page();
+
+		WriteText( "\nfont:	equ $" );
 		for ( nChar = 0; nChar < 96; nChar++ )
 		{
-			WriteInstruction( "defb " );
+			WriteInstruction( "db " );
 			for ( nByte = 0; nByte < 8; nByte++ )
 			{
 				WriteNumber( cDefaultFont[ nChar * 8 + nByte ] );
@@ -2440,9 +2791,11 @@ void CreateHopTable( void )
 {
 	short int nChar = 0;
 
-	WriteText( "\njtab   equ $" );
+    define_page();
+
+	WriteText( "\njtab:	" );
 	nChar = 0;
-	WriteInstruction( "defb " );
+	WriteInstruction( "db " );
 
 	if ( nUseHopTable > 0 )
 	{
@@ -2460,13 +2813,15 @@ void CreateKeyTable( void )
 {
 	short int nKey;
 
+    define_page();
+
 	if ( nMode == ROM )
 	{
-		WriteText( "\nkeytab   defw " );
+		WriteText( "\nkeytab:	defw " );
 	}
 	else
 	{
-		WriteText( "\nkeys   defw " );
+		WriteText( "\nkeys:	defw " );
 	}
 	for ( nKey = 0; nKey < 10; nKey++ )
 	{
@@ -2476,31 +2831,25 @@ void CreateKeyTable( void )
 	WriteNumberHex( cDefaultKeys[ nKey ] );
 }
 
-/*
-MDLADDR1:	incbin "MRZ.pt2"         ;Place your song here.
-MDLADDR2:	incbin "DECRUNCH.pt2"         ;Place your song here.
-
-SONGTAB:	dw MDLADDR1,MDLADDR2
-
-*/
 void CreateSongs( void )
 {
     int i;
-    char cList[100];
-	char cBuffer[100];
-    
-    if ( songs.number > 0 ) {   
+    char cList[256], cBuffer[128];
+
+    if ( songs.number > 0 ) {
+        define_page();
         strcpy(cList, "\nsongtab:     dw ");
     	for ( i = 0; i < songs.number; i++ )
     	{
-            sprintf(cBuffer, "\nsongaddr%d:   incbin \"..\\resources\\%s\"",i,songs.name[i]);
-    		WriteText( cBuffer );						/* start of text message */
-    		sprintf(cList,"%ssongaddr%d-100,",cList,i);
+            sprintf(cBuffer, "\nsongaddr%d:   incbin \"../resources/%s\"",i,songs.name[i]);
+    		WriteText( cBuffer );
+    		sprintf(cBuffer,"songaddr%d-100,",i);
+            strcat(cList, cBuffer);
         }
         cList[strlen(cList)-1] = '\0';
-    	WriteText( cList );						/* start of text message */
+    	WriteText( cList );
         sprintf(cBuffer, "\n\nsongbufsize equ %d",songs.maxsize);
-		WriteText( cBuffer );						/* start of text message */
+		WriteText( cBuffer );
 	}
 }
 
@@ -2508,9 +2857,9 @@ void CreateSongs( void )
 unsigned short int NextKeyword( int savemsg )
 {
 	unsigned short int nFound;
-	unsigned short int nSrc = 0;
+	/* unsigned short int nSrc = 0; */
 	unsigned short int nResWord = INS_IF;					/* ID of reserved word we're checking. */
-	unsigned short int nWord = 0;
+	/* unsigned short int nWord = 0; */
 	unsigned short int nLength = 0;							/* length of literal string. */
 	const unsigned char *cRes;								/* reserved word pointer. */
 	unsigned char *cSrcSt;									/* source pointer, word start. */
@@ -2654,7 +3003,7 @@ unsigned short int NextKeyword( int savemsg )
 				   toupper( *cSrc ) > 'Z' ||
 				   cSrc >= ( cBuff + lSize ) ) )			/* EOF before NL/CR. */
 			{
-//				printf(".-Found a keyword: %d/%d\n", nResWord, FINAL_INSTRUCTION);
+				/* printf("NextKeyword(): Found a keyword=(%.*s)\n", cSrc - cSrcSt, cSrcSt); */
 				nFound++;									/* great, matched a reserved word. */
 			}
 			else
@@ -2980,6 +3329,18 @@ void Compile( unsigned short int nInstruction )
 		case INS_SPRITESOFF:
 			CR_SpritesOff();
 			break;
+		case INS_SCREENON:
+			CR_ScreenOn();
+			break;
+		case INS_SCREENOFF:
+			CR_ScreenOff();
+			break;
+		case INS_CRUMBLE:
+			CR_Crumble();
+			break;
+		case INS_THRUST:
+			CR_Thrust();
+			break;
 		case INS_SOUND:
 			CR_Sound();
 			break;
@@ -2990,7 +3351,7 @@ void Compile( unsigned short int nInstruction )
 			CR_Crash();
 			break;
 		case INS_CLS:
-			CR_ClS();
+			CR_Cls();
 			break;
 		case INS_BORDER:
 			CR_Border();
@@ -3242,7 +3603,7 @@ void Compile( unsigned short int nInstruction )
 			break;
 		case CMP_DEFINEMUSIC:
 			CR_DefineMusic();
-			break;
+            break;
 		default:
 			printf( "Instruction %d not handled\n", nInstruction );
 			break;
@@ -3279,32 +3640,24 @@ void CR_While( void )
 	nReadingControls = 0;									/* haven't read the joystick/keyboard in this loop yet. */
 }
 
-/* TODO: Check 2-pixel MSX sprite movements */
-void CR_SpriteUp( void )					
+void CR_SpriteUp( void )
 {
 	WriteInstruction( "dec (ix+3)" );
-//	WriteInstruction( "dec (ix+8)" );
 }
 
-/* TODO: Check 2-pixel MSX sprite movements */
 void CR_SpriteDown( void )
 {
 	WriteInstruction( "inc (ix+3)" );
-//	WriteInstruction( "inc (ix+8)" );
 }
 
-/* TODO: Check 2-pixel MSX sprite movements */
 void CR_SpriteLeft( void )
 {
 	WriteInstruction( "dec (ix+4)" );
-//	WriteInstruction( "dec (ix+9)" );
 }
 
-/* TODO: Check 2-pixel MSX sprite movements */
 void CR_SpriteRight( void )
 {
 	WriteInstruction( "inc (ix+4)" );
-//	WriteInstruction( "inc (ix+9)" );
 }
 
 void CR_EndIf( void )
@@ -3347,7 +3700,7 @@ void CR_EndWhile( void )
 {
 	unsigned short int nAddr1;
 	unsigned short int nAddr2;
-	unsigned short int nAddr3;
+	/* unsigned short int nAddr3; */
 
 	if ( nNumWhiles > 0 )
 	{
@@ -3705,17 +4058,16 @@ void CompileShift( short int nArg )
 	}
 }
 
-/* TODO: needs MSX conversion */
 void CR_Key( void )
 {
 	unsigned short int nArg = NextKeyword(STOREMSG);
 	unsigned short int nArg2;
-	char szInstruction[ 16 ];
+	char szInstruction[ 24 ];
 
 	if ( nArg == INS_NUM )										/* good, it's a number. */
 	{
 		nArg = GetNum( 8 );
-		if ( nArg < 7 )
+		if ( nArg < 7 )											/* check if directions or fire,fire2,fire3 */
 		{
 			nArg2 = Joystick( nArg );
 			WriteInstruction( "ld a,(joyval)" );
@@ -3727,8 +4079,7 @@ void CR_Key( void )
 		else
 		{
 			sprintf( szInstruction, "ld hl,keys+%d", nArg*2 );	/* get key from table. */
-			WriteInstruction(
-			 szInstruction );
+			WriteInstruction(szInstruction );
 			WriteInstruction( "ld a,(hl)" );					/* get row. */
 			WriteInstruction( "inc hl" );						/* next byte. */
 			WriteInstruction( "ld d,(hl)" );					/* get key. */
@@ -3757,7 +4108,7 @@ void CR_Key( void )
 
 void CR_DefineKey( void )
 {
-	char szInstruction[ 15 ];
+	char szInstruction[ 24 ];
 	unsigned short int nNum = NumberOnly();
 
 	WriteInstruction( "call chkkey" );
@@ -3787,7 +4138,7 @@ void CR_Collision( void )
 		}
 		else													/* it's a sprite type. */
 		{
-			WriteInstruction( "ld b," );
+			WriteInstruction( "ld c," );
 			WriteNumber( nArg );								/* sprite type to find. */
 			WriteInstruction( "call sktyp" );
 			WriteInstruction( "jp nc,      " );
@@ -3796,7 +4147,7 @@ void CR_Collision( void )
 	else
 	{
 		CompileKnownArgument( nArg );							/* puts argument into accumulator */
-		WriteInstruction( "ld b,a" );
+		WriteInstruction( "ld c,a" );
 		WriteInstruction( "call sktyp" );
 		WriteInstruction( "jp nc,      " );
 	}
@@ -4126,54 +4477,77 @@ void CR_ZeroBonus( void )
 
 void CR_Sound( void )
 {
-	unsigned short int nArg = NextKeyword(STOREMSG);
+	unsigned short int nArg1;
+	unsigned short int nArg2;
+	unsigned char *cSrc;
 
-	if ( nArg == INS_NUM )									/* literal number. */
-	{
-		nArg = GetNum( 8 );
-		if ( !nArg ) 
-		{
-			WriteInstruction( "xor a" );
-		} 
-		else
-		{
-			WriteInstruction( "ld a," );
-			WriteNumber( nArg );		
-		}
-	}
-	else
-	{
-		CompileKnownArgument( nArg );						/* puts argument into accumulator. */
-	}
-	WriteInstruction( "call sfx_set" );
+	cSrc = cBufPos;
+    nArg1 = NextKeyword(STOREMSG);
+    if ( nArg1 == INS_NUM )						/* literal number. */
+    {
+        nArg1 = GetNum( 8 );
+        if ( !nArg1 ) {
+            WriteInstruction( "xor a" );
+        } else {
+            WriteInstruction( "ld a," );
+            WriteNumber( nArg1 );
+        }
+        cSrc = cBufPos;
+        nArg2 = NextKeyword(DROPMSG);
+        if ( nArg2 == INS_NUM ) {
+            nArg2 = GetNum(8);
+            if ( nArg1 == nArg2 ) {
+                WriteInstruction( "ld c,a" );
+            } else {
+                WriteInstruction( "ld c," );
+                WriteNumber( nArg2 );
+            }
+        } else {
+            if ( findArgumentType(nArg2) != INVALID ) {
+                CompileKnownArgument( nArg2 );						/* puts argument into accumulator. */
+                WriteInstruction( "ld c,a" );
+            } else {
+                WriteInstruction( "ld c,0" );
+                cBufPos = cSrc;
+            }
+        }
+        WriteInstruction( "call sfx_set" );
+        nSfx = 1;
+    } else {
+        if ( CompileKnownArgument( nArg1 ) != INVALID ) {						/* puts argument into accumulator if it's valid. */
+            cSrc = cBufPos;
+            nArg2 = NextKeyword(DROPMSG);
+            if ( nArg2 == INS_NUM ) {
+                nArg2 = GetNum(8);
+                if ( nArg1 == nArg2 ) {
+                    WriteInstruction( "ld c,a" );
+                } else {
+                    WriteInstruction( "ld c," );
+                    WriteNumber( nArg2 );
+                }
+            } else {
+                if ( findArgumentType(nArg2) != INVALID ) {
+                    CompileKnownArgument( nArg2 );						/* puts argument into accumulator. */
+                    WriteInstruction( "ld c,a" );
+                } else {
+                    WriteInstruction( "ld c,0" );
+                    cBufPos = cSrc;
+               }
+            }
+            WriteInstruction( "call sfx_set" );
+            nSfx = 1;
+        } else {
+            cBufPos = cSrc;
+        }
+    }
 
-//	if ( nArg == INS_NUM )									/* literal number. */
-//	{
-//		nArg = GetNum( 16 ) * SNDSIZ;
-//		WriteInstruction( "ld hl,fx1" );
-//		WriteInstruction( "ld de," );
-//		WriteNumber( nArg );
-//	}
-//	else													/* work out sound address. */
-//	{
-//		CompileKnownArgument( nArg );						/* puts argument into accumulator. */
-//		WriteInstruction( "ld d,a" );						/* first parameter. */
-//		WriteInstruction( "ld h," );						/* size of each sound. */
-//		WriteNumber( SNDSIZ );
-//		WriteInstruction( "call imul" );					/* find distance to sound. */
-//		WriteInstruction( "ld de,fx1" );
-//	}
-//	WriteInstruction( "add hl,de" );
-//	WriteInstruction( "call isnd" );
-
-	nSfx = 1;
 }
 
 void CR_Music( void )
 {
 	unsigned short int nArg1 = NextKeyword(STOREMSG);
 	unsigned short int nArg2;
-	
+
 	if ( nArg1 == INS_NUM )						/* literal number. */
 	{
 		nArg1 = GetNum( 8 );
@@ -4183,7 +4557,7 @@ void CR_Music( void )
 			if ( nArg2 == INS_NUM )
 			{
 				nArg2 = GetNum(8);
-				if ( !nArg2) 
+				if ( !nArg2)
 				{
 					WriteInstruction( "call music_loopoff" );
 				}
@@ -4192,11 +4566,11 @@ void CR_Music( void )
 					WriteInstruction( "call music_loopon" );
 				}
 				WriteInstruction( "ld a," );
-				WriteNumber( nArg1 );		
+				WriteNumber( nArg1 );
 				WriteInstruction( "call music_set" );
 			}
-		} 
-		else 
+		}
+		else
 		{
 			WriteInstruction( "call music_mute" );
 		}
@@ -4207,7 +4581,7 @@ void CR_Music( void )
 		if ( nArg2 == INS_NUM )
 		{
 			nArg2 = GetNum(8);
-			if ( !nArg2) 
+			if ( !nArg2)
 			{
 				WriteInstruction( "call music_loopoff" );
 			}
@@ -4218,14 +4592,49 @@ void CR_Music( void )
 			CompileKnownArgument( nArg1 );						/* puts argument into accumulator. */
 			WriteInstruction( "call music_set" );
 		}
-	} 
-	
+	}
+
 	nMusic = 1;
 }
 
 void CR_SpritesOff( void )
 {
 	WriteInstruction( "call dissprs" );
+}
+
+void CR_ScreenOn( void )
+{
+	WriteInstruction( "call enascreen" );
+}
+
+void CR_ScreenOff( void )
+{
+	WriteInstruction( "call disscreen" );
+}
+
+void CR_Crumble( void )
+{
+	WriteInstruction( "call crumble" );					// call crumbling blocks
+	nCrumbling = 1;
+}
+
+void CR_Thrust( void )
+{
+	unsigned short int nArg = NextKeyword(STOREMSG);
+
+	if ( nArg == INS_NUM )									/* literal number, 8 bits. */
+	{
+		nArg = GetNum( 8 );
+        WriteInstruction( "ld a," );
+		WriteNumber( nArg );
+	}
+	else													/* work out 8-bit argument to add. */
+	{
+		CompileKnownArgument( nArg );						/* puts argument into accumulator. */
+	}
+
+	WriteInstruction( "call thrust" );
+    nThrust = 1;
 }
 
 void CR_Beep( void )
@@ -4249,7 +4658,7 @@ void CR_Beep( void )
 	}
 
 	WriteInstruction( "ld (sndtyp),a" );
-	
+
 	nBeeper = 1;
 }
 
@@ -4276,13 +4685,13 @@ void CR_Crash( void )
 		CompileKnownArgument( nArg );						/* puts argument into accumulator. */
 		WriteInstruction( "or 128" );						/* set white noise flag. */
 	}
-	
+
 	WriteInstruction( "ld (sndtyp),a" );
-	
+
 	nBeeper = 1;
 }
 
-void CR_ClS( void )
+void CR_Cls( void )
 {
 	WriteInstruction( "call cls" );
 }
@@ -4321,25 +4730,25 @@ void CR_Ink( void )
 	WriteInstruction( "add a,a" );
 	WriteInstruction( "add a,a" );
 	WriteInstruction( "ld e,a" );
-	WriteInstruction( "ld a,(clratt)" );	
+	WriteInstruction( "ld a,(clratt)" );
 	WriteInstruction( "and $0F" );
 	WriteInstruction( "or e" );
 	WriteInstruction( "ld (clratt),a" );				/* set the permanent attributes. */
 }
 
-/* TODO: check MSX2 palette compatibility */
+/* Not MSX2 compatible */
 void CR_Clut( void )
 {
-	CompileArgument();
-	WriteInstruction( "rrca" );								/* multiply by 64 for colour look-up table. */
-	WriteInstruction( "rrca" );
-	WriteInstruction( "and 192" );							/* only use CLUT bits. */
-	WriteInstruction( "ld c,a" );							/* store ink colour in c register. */
-	WriteInstruction( "ld hl,23693" );						/* permanent attributes. */
-	WriteInstruction( "ld a,(hl)" );
-	WriteInstruction( "and 63" );							/* retain ink and paper. */
-	WriteInstruction( "or c" );								/* merge in new CLUT. */
-	WriteInstruction( "ld (hl),a" );						/* set permanent attributes. */
+//	CompileArgument();
+//	WriteInstruction( "rrca" );								/* multiply by 64 for colour look-up table. */
+//	WriteInstruction( "rrca" );
+//	WriteInstruction( "and 192" );							/* only use CLUT bits. */
+//	WriteInstruction( "ld c,a" );							/* store ink colour in c register. */
+//	WriteInstruction( "ld hl,23693" );						/* permanent attributes. */
+//	WriteInstruction( "ld a,(hl)" );
+//	WriteInstruction( "and 63" );							/* retain ink and paper. */
+//	WriteInstruction( "or c" );								/* merge in new CLUT. */
+//	WriteInstruction( "ld (hl),a" );						/* set permanent attributes. */
 }
 
 void CR_Delay( void )
@@ -4641,7 +5050,7 @@ void CR_DetectObject( void )
 void CR_Asm( void )											/* this is undocumented as it's dangerous! */
 {
 	unsigned short int nNum = NumberOnly();
-	WriteInstruction( "defb " );
+	WriteInstruction( "db " );
 
 	WriteNumber( nNum );									/* write opcode straight to code. */
 }
@@ -4730,7 +5139,6 @@ void CR_Divide( void )
 	nAnswerWantedHere = CompileArgument();					/* stores the place where we want the answer. */
 }
 
-/* TODO: check if it is useful for MSX */
 void CR_SpriteInk( void )
 {
 	CompileArgument();
@@ -4783,24 +5191,30 @@ void CR_Silence( void )
 void CR_ClW( void )
 {
 	WriteInstruction( "call clw" );
-	WriteInstruction( "call inishr" );						/* clear the shrapnel table. */
 }
 
-/* TODO: check if we need to disable MSX Z80 interrupts. New format PALETTE color byte1 byte2 */
 void CR_Palette( void )
 {
-	CompileArgument();						/* palette register to write. */
-	WriteInstruction( "di" );
-	WriteInstruction( "out	($99),a" );
-	WriteInstruction( "ld	a,16+128" );
-	WriteInstruction( "ei" );
-	WriteInstruction( "out	($99),a" );
-	/* palette data to write. */
-	CompileArgument();	
-	WriteInstruction( "out	($9A),a" );
-	CompileArgument();	
-	WriteInstruction( "out	($9A),a" );
+	unsigned short int nArg = NextKeyword(STOREMSG);
 
+	if ( nArg == INS_NUM )									/* first argument is numeric. */
+	{
+		nArg = GetNum( 8 );									/* get the argument. */
+		CompileKnownArgument( nArg );						/* puts first argument into accumulator. */
+		WriteInstruction( "di" );
+		WriteInstruction( "out	(MSX_VDPCW),a" );
+		WriteInstruction( "ld	a,16+128" );
+		WriteInstruction( "ei" );
+		WriteInstruction( "out	(MSX_VDPCW),a" );
+		CompileArgument();									/* puts second argument into accumulator. */
+		WriteInstruction( "out	(MSX_VDPPAL),a" );		/* RB */
+		CompileArgument();
+		WriteInstruction( "out	(MSX_VDPPAL),a" );		/* 0G */
+	}
+	else
+	{
+		Error( "Invalid argument for PALETTE" );
+	}
 }
 
 void CR_GetBlock( void )
@@ -4841,7 +5255,7 @@ void CR_GetBlock( void )
 
 void CR_Read( void )
 {
-	char szInstruction[ 12 ];
+	char szInstruction[ 16 ];
 
 	cDataRequired = 1;										/* need to find data at the end. */
 	sprintf( szInstruction, "call read%02d", nEvent );
@@ -4861,7 +5275,7 @@ void CR_Data( void )
 	unsigned short int nArg = 0;
 	unsigned short int nValue = 0;
 	unsigned char *cSrc;									/* source pointer. */
-	char szInstruction[ 22 ];
+	char szInstruction[ 28 ];
 	unsigned short int nList = 0;
 
 	do
@@ -4881,12 +5295,12 @@ void CR_Data( void )
 				{
 					// sprintf( szInstruction, "rptr%02d defw rdat%02d", nEvent, nEvent );
 					// WriteInstructionAndLabel( szInstruction );
-					sprintf( szInstruction, "rdat%02d defb %d", nEvent, nValue );
+					sprintf( szInstruction, "rdat%02d db %d", nEvent, nValue );
 					WriteInstructionAndLabel( szInstruction );
 				}
 				else
 				{
-					sprintf( szInstruction, "defb %d", nValue );
+					sprintf( szInstruction, "db %d", nValue );
 					WriteInstruction( szInstruction );
 				}
 			}
@@ -4918,7 +5332,8 @@ void CR_Data( void )
 		/* Now we set up a read routine. */
 		if ( SpriteEvent() )
 		{
-			sprintf( szInstruction, "read%02d ld l,(ix+15)", nEvent, nEvent );
+/*			sprintf( szInstruction, "read%02d ld l,(ix+15)", nEvent, nEvent );*/
+            sprintf( szInstruction, "read%02d ld l,(ix+15)", nEvent );
 			WriteInstructionAndLabel( szInstruction );
 			WriteInstruction( "ld h,(ix+16)" );
 		}
@@ -4934,7 +5349,8 @@ void CR_Data( void )
 		WriteInstruction( "sbc hl,de" );
 		WriteInstruction( "ex de,hl" );
 		WriteInstruction( "jr nc,$+5" );
-		sprintf( szInstruction, "ld hl,rdat%02d", nEvent, nEvent );
+/*		sprintf( szInstruction, "ld hl,rdat%02d", nEvent, nEvent );*/
+        sprintf( szInstruction, "ld hl,rdat%02d", nEvent );
 		WriteInstruction( szInstruction );
 		WriteInstruction( "ld a,(hl)" );
 		WriteInstruction( "inc hl" );
@@ -4963,7 +5379,7 @@ void CR_Data( void )
 
 void CR_Restore( void )
 {
-	char szInstruction[ 15 ];
+	char szInstruction[ 18 ];
 
 	cDataRequired = 1;										/* need to find data at the end. */
 
@@ -4973,8 +5389,9 @@ void CR_Restore( void )
 	}
 	else
 	{
-		sprintf( szInstruction, "ld h,255", nEvent, nEvent );
-		WriteInstruction( szInstruction );
+		/*sprintf( szInstruction, "ld h,255", nEvent, nEvent );
+		WriteInstruction( szInstruction ); */
+		WriteInstruction( "ld h,255");
 		sprintf( szInstruction, "ld (rptr%02d),hl", nEvent );
 		WriteInstruction( szInstruction );
 	}
@@ -4990,6 +5407,7 @@ void CR_DefineParticle( void )
 	{
 		nParticle++;
 		WriteInstruction( "ret" );							/* make sure we don't drop through from elsewhere. */
+		define_page();
 		WriteInstructionAndLabel( "ptcusr equ $" );
 		nParticles = 1;
 	}
@@ -5056,7 +5474,7 @@ void CR_ControlMenu( void )
 {
 	WriteInstruction( "\nrtcon:			; CONTROLMENU" );
 	WriteInstruction( "call vsync" );
-	
+
 	WriteInstruction( "ld a,0" );
 	WriteInstruction( "ld (contrl),a" );
 	WriteInstruction( "ld hl,keys+14" );
@@ -5065,7 +5483,7 @@ void CR_ControlMenu( void )
 	WriteInstruction( "ld d,(hl)");
 	WriteInstruction( "call ktest" );
 	WriteInstruction( "jr nc,rtcon1" );
-	
+
 	WriteInstruction( "ld a,1" );
 	WriteInstruction( "ld (contrl),a" );
 	WriteInstruction( "ld hl,keys+16" );
@@ -5074,7 +5492,7 @@ void CR_ControlMenu( void )
 	WriteInstruction( "ld d,(hl)");
 	WriteInstruction( "call ktest" );
 	WriteInstruction( "jr nc,rtcon1" );
-	
+
 	WriteInstruction( "ld a,2" );
 	WriteInstruction( "ld (contrl),a" );
 	WriteInstruction( "ld hl,keys+18" );
@@ -5082,13 +5500,14 @@ void CR_ControlMenu( void )
 	WriteInstruction( "inc hl");
 	WriteInstruction( "ld d,(hl)");
 	WriteInstruction( "call ktest" );
-	
+
 	WriteInstruction( "jr c,rtcon" );
 	WriteInstruction( "\nrtcon1:" );
 }
 
 void CR_ValidateMachine( void )
 {
+	char buf[128];
 	unsigned short int nArg = NextKeyword(STOREMSG);
 
 	if ( nArg == INS_NUM )									/* first argument is numeric. */
@@ -5096,9 +5515,12 @@ void CR_ValidateMachine( void )
 		nArg = GetNum( 8 );									/* get the argument. */
 		if ( nArg != FORMAT_MSX )							/* make sure this is the correct machine. */
 		{
-			Error( "Source is for a different machine, ceasing compilation" );
-			cBufPos = cBuff + lSize;
-		} 
+			sprintf(buf, "Source is for a different machine (%d), ceasing compilation", nArg );
+			Error( buf);
+			exit(1);
+			/* Error( "Source is for a different machine, ceasing compilation" );
+			cBufPos = cBuff + lSize; */
+		}
 	}
 	else
 	{
@@ -5186,7 +5608,7 @@ void CR_Ticker( void )
 			WriteInstruction( "ld a,1" );
 			WriteInstruction( "ld (scrlyoff),a" );
 			/* WriteInstruction( "ld (scrltxt),a" ); */
-			
+
 		}
 		else
 		{
@@ -5245,6 +5667,7 @@ void CR_User( void )
 	}
 
 	WriteInstruction( "call user" );
+	nUser = 1;
 }
 
 void CR_Event( void )
@@ -5303,15 +5726,15 @@ void CR_DefineBlock( void )
 		else
 		{
 			Error( "Missing data for DEFINEBLOCK" );
-			nDatum = 17;
+			nDatum = BLOCK_SIZE+1;
 		}
 	}
-	while ( nDatum < 17 );
+	while ( nDatum < BLOCK_SIZE+1 );
 }
 
 void CR_DefineWindow( void )
 {
-	char szInstruction[ 18 ];
+	char szInstruction[ 22 ];
 	unsigned short int nArg;
 
 	if ( nEvent >= 0 && nEvent < NUM_EVENTS )
@@ -5327,8 +5750,8 @@ void CR_DefineWindow( void )
 		{
 			nArg = GetNum( 8 );
 			nWinTop = nArg;
-//			sprintf( szInstruction, "wintop defb %d", nArg );
-			sprintf( szInstruction, "WINDOWTOP equ %d", nArg );
+//			sprintf( szInstruction, "wintop db %d", nArg );
+			sprintf( szInstruction, "WINDOWTOP equ %hu", nArg );
 			/* printf("Instruction:[%s]\n",szInstruction); */
 			WriteInstructionAndLabel( szInstruction );
 		}
@@ -5342,8 +5765,8 @@ void CR_DefineWindow( void )
 		{
 			nArg = GetNum( 8 );
 			nWinLeft = nArg;
-//			sprintf( szInstruction, "winlft defb %d", nArg );
-			sprintf( szInstruction, "WINDOWLFT equ %d", nArg );
+//			sprintf( szInstruction, "winlft db %d", nArg );
+			sprintf( szInstruction, "WINDOWLFT equ %hu", nArg );
 			/* printf("Instruction:[%s]\n",szInstruction); */
 			WriteInstructionAndLabel( szInstruction );
 		}
@@ -5357,7 +5780,7 @@ void CR_DefineWindow( void )
 		{
 			nArg = GetNum( 8 );
 			nWinHeight = nArg;
-//			sprintf( szInstruction, "winhgt defb %d", nArg );
+//			sprintf( szInstruction, "winhgt db %d", nArg );
 			sprintf( szInstruction, "WINDOWHGT equ %d", nArg );
 			/* printf("Instruction:[%s]\n",szInstruction); */
 			WriteInstructionAndLabel( szInstruction );
@@ -5372,7 +5795,7 @@ void CR_DefineWindow( void )
 		{
 			nArg = GetNum( 8 );
 			nWinWidth = nArg;
-//			sprintf( szInstruction, "winwid defb %d", nArg );
+//			sprintf( szInstruction, "winwid db %d", nArg );
 			sprintf( szInstruction, "WINDOWWID equ %d", nArg );
 			/* printf("Instruction:[%s]\n",szInstruction); */
 			WriteInstructionAndLabel( szInstruction );
@@ -5453,7 +5876,7 @@ void CR_DefineScreen( void )
 	unsigned short int nArg;
 	char cChar;
 	short int nBytes = nWinWidth * nWinHeight;
-	char szMsg[ 41 ];
+	char szMsg[ 44 ];
 
 	if ( nEvent >= 0 && nEvent < NUM_EVENTS )
 	{
@@ -5498,7 +5921,7 @@ void CR_SpritePosition( void )
 		EndEvent();												/* always put a ret at the end. */
 		nEvent = -1;
 	}
-	
+
 
 	cChar = ( char )( nScreen - 1 );
 	fwrite( &cChar, 1, 1, pWorkNme );
@@ -5533,6 +5956,7 @@ void CR_DefineObject( void )
 		nEvent = -1;
 	}
 
+	/* OBJECT definitio: room, y, x, 128 bytes graphic data */
 	do
 	{
 		nArg = NextKeyword(STOREMSG);
@@ -5545,10 +5969,10 @@ void CR_DefineObject( void )
 		else
 		{
 			Error( "Missing data for DEFINEOBJECT" );
-			nDatum = 67;
+			nDatum = OBJECT_SIZE + 3;
 		}
 	}
-	while ( nDatum < 67 );
+	while ( nDatum < (OBJECT_SIZE + 3) );
 
 	nObjects++;
 }
@@ -5577,11 +6001,14 @@ void CR_Map( void )
 	if ( nArg == INS_NUM )
 	{
 		cMapWid = ( char )GetNum( 8 );
-		WriteText( "\nMAPWID equ " );
+		WriteText( "\nMAPWID	equ " );
 		WriteNumber( cMapWid );
 
+        define_page();  /* define page if in ROM mode */
+
 		/* seal off the upper edge of the map. */
-		WriteInstruction( "defb " );
+        WriteText( "\nmapedge: " );
+		WriteInstruction( "db " );
 		nDone = cMapWid - 1;
 		while ( nDone > 0 )
 		{
@@ -5595,7 +6022,8 @@ void CR_Map( void )
 		Error( "Map WIDTH not defined" );
 	}
 
-	WriteText( "\nmapdat equ $" );
+
+	WriteText( "\nmapdat:" );
 
 	nArg = NextKeyword(STOREMSG);
 	if ( nArg == CMP_STARTSCREEN )								/* first argument is width, WIDTH clause optional */
@@ -5625,7 +6053,7 @@ void CR_Map( void )
 				}
 				if ( nCol == 0 )
 				{
-					WriteInstruction( "defb " );
+					WriteInstruction( "db " );
 				}
 				else
 				{
@@ -5646,8 +6074,8 @@ void CR_Map( void )
 	}
 	while ( nDone == 0 );
 
-	/* Now write block of 255 bytes to seal the map lower edge */
-	WriteInstruction( "defb " );
+	/* Now write block of bytes value 255 to seal the map lower edge */
+	WriteInstruction( "db " );
 	nDone = cMapWid - 1;
 
 	while ( nDone > 0 )
@@ -5658,16 +6086,17 @@ void CR_Map( void )
 
 	WriteText( "255" );
 
-	WriteText( "\nstmap  defb " );
+	WriteText( "\nstmap: db " );
 	WriteNumber( nStartOffset );
 	EndDummyEvent();											/* write output to target file. */
 }
 
 void CR_DefinePalette( void )
 {
+	char errStr[128];
 	unsigned short int nArg;
 
-	while ( cPalette < 16 )
+	while ( cPalette < PALETTE_COLORS )
 	{
 		nArg = NextKeyword(STOREMSG);
 		if ( nArg == INS_NUM )
@@ -5676,8 +6105,9 @@ void CR_DefinePalette( void )
 		}
 		else
 		{
-			Error( "DEFINEPALETTE requires 16 RGB definitions ($RBG)" );
-			cPalette = 16;
+			sprintf(errStr, "DEFINEPALETTE requires %d RGB definitions ($0GRB), being G,R or B values between 0-7", PALETTE_COLORS);
+			Error( errStr );
+			cPalette = PALETTE_COLORS;
 		}
 
 		cPalette++;
@@ -5716,7 +6146,7 @@ void CR_DefineFont( void )
 	unsigned short int nArg;
 	short int nByte = 0;
 	unsigned char b = 0;
-	
+
 	nUseFont = 1;
 
 	while ( nByte < 768 )
@@ -5774,7 +6204,7 @@ void CR_DefineControls( void )
 	unsigned char *cSrc;									/* source pointer. */
 	unsigned short int nArg;
 	unsigned short int nNum = 0;
-	short int nByte = 0;
+	/* short int nByte = 0; */
 	short int nCount = 0;
 	short int nCurrentLine = nLine;
 
@@ -5811,18 +6241,17 @@ void CR_DefineMusic( void )
 	cSrc = cBufPos;
 	nArg = NextKeyword(DROPMSG);
 
-	if ( nArg == INS_STR ) 
+	if ( nArg == INS_STR )
 	{
         while( *cSrc != '"' && cSrc<cBufPos ) cSrc++;
         strncpy(songs.name[songs.number],cSrc+1,(cBufPos-cSrc)-2);
         songs.name[songs.number][(cBufPos-cSrc)-2] = '\0';
-        sprintf(fname,"..\\resources\\%s", songs.name[songs.number]);	
+        sprintf(fname,"../resources/%s", songs.name[songs.number]);
         size = Filesize(fname);
         if ( size > songs.maxsize ) songs.maxsize = size;
         songs.number++;
         cSrc = cBufPos;
 	}
-
 	cBufPos = cSrc;									/* restore source address so we don't miss the next line. */
 	nLine = nCurrentLine;
 }
@@ -6017,6 +6446,23 @@ unsigned short int CompileArgument( void )
 /****************************************************************************************************************/
 unsigned short int CompileKnownArgument( short int nArg )
 {
+    unsigned short int argType;
+
+    argType = findArgumentType(nArg);
+    switch (argType) {
+        case NUMBER:
+            CR_ArgA( GetNum( 8 ) );
+            break;
+        case PARAMETER:
+			CR_PamA( nArg );
+			break;
+        case STRING:
+            CR_ArgA( nMessageNumber++ );
+            break;
+        default:
+            Error( "Not a number or variable. Missing argument?" );
+    }
+    /*
 	if ( nArg == INS_NUM )
 	{
 		CR_ArgA( GetNum( 8 ) );
@@ -6030,18 +6476,46 @@ unsigned short int CompileKnownArgument( short int nArg )
 		}
 		else
 		{
-			if ( nArg == INS_STR )							/* it was a string argument. */
+			if ( nArg == INS_STR )
 			{
-				CR_ArgA( nMessageNumber++ );				/* number of this message. */
+				CR_ArgA( nMessageNumber++ );
 			}
 			else
 			{
+			    nArg = 0;
 				Error( "Not a number or variable. Missing argument?" );
 			}
 		}
 	}
+    */
+	return argType;
+}
 
-	return ( nArg );
+unsigned short int findArgumentType( short int nArg )
+{
+    unsigned short int argType = INVALID;
+
+	if ( nArg == INS_NUM )
+	{
+		argType = NUMBER;
+	}
+	else
+	{
+		if ( nArg >= FIRST_PARAMETER &&
+			 nArg <= LAST_PARAMETER )
+		{
+            argType = PARAMETER;
+		}
+		else
+		{
+			if ( nArg == INS_STR )							/* it was a string argument. */
+			{
+                argType = STRING;
+			}
+		}
+	}
+
+	return argType;
 }
 
 unsigned short int NumberOnly( void )
@@ -6110,7 +6584,7 @@ void CR_Else( void )
 /****************************************************************************************************************/
 void CR_Arg( void )
 {
-	
+
 //	printf("Arg()!!!\n");
 
 	if ( nPamType == 255 )									/* this is the first argument we've found. */
@@ -6158,11 +6632,11 @@ void CR_Arg( void )
 /****************************************************************************************************************/
 void CR_Pam( unsigned short int nParam )
 {
-	
-	
-	
+
+
+
 //	printf("Pam()=%d!!!\n",nParam);
-	
+
 	if ( nPamType == 255 )									/* this is the first argument we've found. */
 	{
 		nPamType = SPRITE_PARAMETER;
@@ -6257,7 +6731,7 @@ void CR_PamB( short int nNum )
 		WriteInstruction( cVar );
 		WriteInstruction( "cp (hl)" );
 	}
-	else												
+	else
 		/* compare accumulator with sprite parameter. */
 	{
 //		printf("cp (ix+?):%d-%d=%d\n",nNum,IDIFF,nNum-IDIFF);
@@ -6560,9 +7034,12 @@ void Error( unsigned char *cMsg )
 	unsigned char *cErr;
 
 	/* fprintf( stderr, "%s on line %d:\n", cMsg, nLine + 72 ); */
-	fprintf( stderr, "%s on line %d:\n", cMsg, nLine-1);
-	cErr = cErrPos + 1;
+	fprintf( stderr, "%s on line %d:\n", cMsg, nLine-1-nErrors);
+	cErr = cErrPos - 1;
 
+	fprintf( stderr, ">" );
+	while ( *cErr != LF && *cErr != CR) cErr--;
+	cErr++;
 	while ( *cErr != LF )
 	{
 		if ( *cErr != CR )
@@ -6570,7 +7047,6 @@ void Error( unsigned char *cMsg )
 			fprintf( stderr, "%c", *cErr++ );
 		}
 	}
-
 	fprintf( stderr, "\n" );
 	nErrors++;
 }
@@ -6591,10 +7067,50 @@ long Filesize(const char *filename)
             }
         } else {
             printf("failed to fseek %s\n", filename);
-        }    
+        }
     } else {
         printf("failed to fopen %s\n", filename);
     }
 
     return sz;
+}
+
+void define_page() {
+    if ( nMode == ROM ) {
+        sprintf(tmpbuf,"\n\n    page 0..%d\n", maxpages-1);
+        WriteText(tmpbuf);
+    } else {
+        if ( maxpages > 1) {
+            sprintf(tmpbuf,"\n\n    page 0..%d\n", maxpages-1);
+            WriteText(tmpbuf);
+        } else {
+            sprintf(tmpbuf,"\n\n    page %d\n", maxpages-1);
+            WriteText(tmpbuf);
+        }
+    }
+}
+
+void usage()
+{
+	printf("Usage: CompilerMSX filename[.agd] [options]\n\n");
+    printf("Options:-------------------------\n");
+    printf("\nGeneral options:\n");
+    printf("  -h  --help		    Display this help\n");
+    printf("\nGame flags options (all options disabled by default)):\n");
+    printf("  -a|--adventure       	Enables adventure mode\n");
+    printf("  -m|--metablocks      	Enables metablocks mode (map blocks 2x2 in size)\n");
+    printf("  -c|--hwcollisions    	Enables HW sprite collisions mode (if disabled, only software based collisions)\n");
+    printf("  -q|--marquee         	Enables marquee mode (no screen initialization at start) \n");
+    printf("\nSFX options:\n");
+    printf("  -l|--fxrelative                    Enables SFX relative volume mode\n");
+    printf("  -y|--fxdynamic                     Enables SFX dynamic channel mode output\n");
+    printf("  -s <channel>|--fxchannel <channel> PSG output channel when dynamic mode is disabled. Values: 1 (C, default), 2 (B), 3 (A)\n");
+    printf("\nVideo options:\n");
+    printf("  -v <mode>|--tvmode <mode> Selects the TV mode in MSX2 or higher machines. Values: 0 (machine default), 1 (PAL), 2 (NTSC)\n");
+    printf("\nStorage options:\n");
+    printf("  -d <size>|--disk <size>   Creates a disk based distribution (.dsk). Values: 32,48\n");
+    printf("  -r <size>|--cart <size>   Creates a ROM cartridge based distribution (.rom). Values: 16,32\n");
+    printf("  -k <size>|--tape <size>   Creates a tape based distribution (.cas). Values: 32,48\n");
+    printf("\neg:	CompilerMSX TEST --adventure -r 32\n");
+    printf("\n	Compiles TEST.agd source with adventure mode enabled and ready to generate a 32KB file\n");
 }

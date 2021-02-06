@@ -1,4 +1,3 @@
-
 ; Game engine code --------------------------------------------------------------
 
 ; DEFINE DEBUG
@@ -7,196 +6,95 @@
 ; Arcade Game Designer.
 ; (C) 2008 - 2018 Jonathan Cauldwell.
 ; MSX version (C) jltursan
-; Based on ZX Spectrum Engine v0.7.4
+; Based on ZX Spectrum Engine v0.7.4 - v0.7.10
 ;
 ; Notes about Music & SFX engine
 ; From the EngineMSX itself, 5 routines are being called right now:
 ;
-; * music_init: initializes the music engine. If your engine doesn't needs this, use ret to do nothing
-; * sfx_init: initializes the sfx engine. Idem
-; * music_play: plays a music frame from the ISR. The idea is to set a buffer with all the PSG register ready to dump
-; * sfx_play: plays a sfx frame from the ISR. Idem
-; * psgrout: generic routine to dump all PSG registers
+; * music_init => initializes the music engine. If your engine doesn't needs this, use ret to do nothing
+; * music_play => plays a music frame from the ISR. The idea is to set a buffer with all the PSG register ready to dump
+; but also must implement:
+; * music_loopoff
+; * music_loopon
+; * music_set
+; * music_mute
+; * sfx_init => initializes the sfx engine. Idem
+; * sfx_play => plays a sfx frame from the ISR. Idem
+; * psgrout => generic routine to dump all PSG registers
 ;
-; 07/01/2020: Fixed: Now evnt18 doesn't disables sprites at all; so you can use the sprites in an ending scene (if you need to hide them, use now SPRITESOFF)
-; 07/01/2020: Added: Due the change in evnt18, a new command SPRITESOFF has been added to the compiler, it hides all sprites by setting 208 Y-coord to sprite 0
-; 09/01/2020: Fixed: CLS & CLW routines now erase scrmap buffer and also disable sprites (Thanks to FX).
-; 01/02/2020: Fixed: ROM stack initialization bug in MSX machines with drives (specially TR)
+; Fixed: Now evnt18 (game completed) doesn't disables sprites at all; so you can use the sprites in an ending scene (if you need to hide them, use now SPRITESOFF)
+; Added: Due the change in evnt18, a new command SPRITESOFF has been added to the compiler, it hides all sprites by setting 208 Y-coord to sprite 0
+; Fixed: CLS & CLW routines now erase scrmap buffer and also disable sprites (Thanks to FX).
+; Fixed: ROM stack initialization bug in MSX machines with drives (specially TR)
 ;
-; ptxt: core routine that prints a font character (no color)
-; pchr: core routine that prints a BLOCK (pattern+color)
+; Fixed: Sprite flicker bug (MSX freezes) due a byte boundary overrun. Table colltab must not cross a byte boundary to avoid this.
+; Added: Some cycles saved in plot pixel routine
+; Added: New command CRUMBLE
+; Fixed: Keyboard scanning back to 50fps to fix some positioning problems when controlling characters
+; Fixed: PSG initialization bug filling registers with illegal values
+; Fixed: Some optimization to the ayFX replayer routine
+; Fixed: PSG wrong reset sound when multichannel mode active (FX_MODE=1)  
+; Fixed: Serious bug in the PSG dumping routine (PT3 specially affected)
+; Added: Support for Metablocks (2x2 characters map blocks)
+; Fixed: UNDOSPRITEMOVE support
+; Fixed: Sometimes player sprite was not initialized correctly when changing screen 
+; Added: New command SPRITESOFF
+; Added: New distribution type: CAS (tape). Needs external tool mcp by Apoloval (Thanks Apoloval!)
+; Fixed: RAM/ROM slot routines changed to a more compatible ones (Thanks JAM!)
+; Added: Support of forced 50hz/60hz TV freqs
+; Added: 50hz/60hz TV freqs swappable with hotkey (SELECT)
+; Added: New command THRUST
+; Added: LZ compression (Pletter) instead RLE for map screens (gains around 30% per screen)
+; Added: New command SCREENON
+; Added: New command SCREENOFF
+; Added: Full ayFX control: SFX priority, fixed channel selection & dynamic sfx channels
+; Added: New memory models: 64KB RAM and 48KB ROM (dsk & cas)
+
+;
+; Core routines
+; ----------------------------------
+; ptxt => core routine that prints a font character (no color)
+; pchr => core routine that prints a BLOCK (pattern+color)
+
+/*
+MEANING OF FLAGS
+=========================================
+
+AFLAG	: Adventure mode
+CFLAG	: Collectables
+CRFLAG	: Crumbling blocks
+DFLAG	: Digging
+EFLAG	: Beeper
+HCFLAG	: Hardware collisions disabled
+LFLAG	: Ladders
+MFLAG	: Menu/Inventory
+MBFLAG	: MetaBlocks
+RTFLAG	: Thrust for rotational control
+OFLAG	: Objects
+PFLAG	: Particles
+QFLAG	: Marquee
+SFLAG	: Scrolling
+TVFREQ	: Force 50Hz(50)/60Hz(60). Only for MSX2 or higher models
+UFLAG	: User routines 
+XFLAG	: PSG SFX
+YFLAG	: PSG Music
+FX_RELATIVE : Relative SFX volume
+FX_MODE 	: SFX replayer mode
+FX_CHANNEL	: Fixed SFX channel (if FX_MODE=0, 1 = C, 2 = B, 3 = A)
+*/
+
+; Distribution types
 
 ROM=0
 DISK=1
 TAPE=2
 
-; --- All MSX 1 BIOS calls ---
+; TV freqs
 
-MSX_CHKRAM	equ $0000
-MSX_RDSLT	equ $000C
-MSX_CHRGTR	equ $0010
-MSX_WRSLT	equ $0014
-MSX_OUTDO	equ $0018
-MSX_CALSLT	equ $001C
-MSX_DCOMPR	equ $0020
-MSX_ENASLT	equ $0024
-MSX_GETYPR	equ $0028
-MSX_CALLF	equ $0030
-MSX_KEYINT	equ $0038
-MSX_INITIO	equ $003B
-MSX_INIFNK	equ $003E
-MSX_DISSCR	equ $0041
-MSX_ENASCR	equ $0044
-MSX_WRTVDP	equ $0047
-MSX_RDVRM	equ $004A
-MSX_WRTVRM	equ $004D
-MSX_SETRD	equ $0050
-MSX_SETWRT	equ $0053
-MSX_FILVRM	equ $0056
-MSX_LDIRMV	equ $0059
-MSX_LDIRVM	equ $005C
-MSX_CHGMOD	equ $005F
-MSX_CHGCLR	equ $0062
-MSX_NMI		equ $0066
-MSX_CLRSPR	equ $0069
-MSX_INITXT	equ $006C
-MSX_INIT32	equ $006F
-MSX_INIGRP	equ $0072
-MSX_INIMLT	equ $0075
-MSX_SETTXT	equ $0078
-MSX_SETT32	equ $007B
-MSX_SETGRP	equ $007E
-MSX_SETMLT	equ $0081
-MSX_CALPAT	equ $0084
-MSX_CALATR	equ $0087
-MSX_GSPSIZ	equ $008A
-MSX_GRPPRT	equ $008D
-MSX_GICINI	equ $0090
-MSX_WRTPSG	equ $0093
-MSX_RDPSG	equ $0096
-MSX_STRTMS	equ $0099
-MSX_CHSNS	equ $009C
-MSX_CHGET	equ $009F
-MSX_CHPUT	equ $00A2
-MSX_LPTOUT	equ $00A5
-MSX_LPTSTT	equ $00A8
-MSX_CNVCHR	equ $00AB
-MSX_PINLIN	equ $00AE
-MSX_INLIN	equ $00B1
-MSX_QINLIN	equ $00B4
-MSX_BREAKX	equ $00B7
-MSX_ISCNTC	equ $00BA
-MSX_CKCNTC	equ $00BD
-MSX_BEEP	equ $00C0
-MSX_CLS		equ $00C3
-MSX_POSIT	equ $00C6
-MSX_FNKSB	equ $00C9
-MSX_ERAFNK	equ $00CC
-MSX_DSPFNK	equ $00CF
-MSX_TOTEXT	equ $00D2
-MSX_GTSTCK	equ $00D5
-MSX_GTTRIG	equ $00D8
-MSX_GTPAD	equ $00DB
-MSX_GTPDL	equ $00DE
-MSX_TAPION	equ $00E1
-MSX_TAPIN	equ $00E4
-MSX_TAPIOF	equ $00E7
-MSX_TAPOON	equ $00EA
-MSX_TAPOUT	equ $00ED
-MSX_TAPOOF	equ $00F0
-MSX_STMOTR	equ $00F3
-MSX_LFTQ	equ $00F6
-MSX_PUTQ	equ $00F9
-MSX_RIGHTC	equ $00FC
-MSX_LEFTC	equ $00FF
-MSX_UPC		equ $0102
-MSX_TUPC	equ $0105
-MSX_DOWNC	equ $0108
-MSX_TDOWNC	equ $010B
-MSX_SCALXY	equ $010E
-MSX_MAPXY	equ $0111
-MSX_FETCHC	equ $0114
-MSX_STOREC	equ $0117
-MSX_SETATR	equ $011A
-MSX_READC	equ $011D
-MSX_SETC	equ $0120
-MSX_NSETCX	equ $0123
-MSX_GTASPC	equ $0126
-MSX_PNTINI	equ $0129
-MSX_SCANR	equ $012C
-MSX_SCANL	equ $012F
-MSX_CHGCAP	equ $0132
-MSX_CHGSND	equ $0135
-MSX_RSLREG	equ $0138
-MSX_WSLREG	equ $013B
-MSX_RDVDP	equ $013E
-MSX_SNSMAT	equ $0141
-MSX_PHYDIO	equ $0144
-MSX_FORMAT	equ $0147
-MSX_ISFLIO	equ $014A
-MSX_OUTDLP	equ $014D
-MSX_GETVCP	equ $0150
-MSX_GETVC2	equ $0153
-MSX_KILBUF	equ $0156
-MSX_CALBAS	equ $0159
-; --- end of all MSX 1 BIOS calls ---
-; Diskrom motor off entry point
-MSX_MTOFF	equ	$4029
+HZ50=50
+HZ60=60
 
-
-; I/O PORTS
-MSX_DEVID	equ	$40
-MSX_SWTIO	equ $41
-
-; VDP PORTS
-MSX_VDPDRW	equ	$98	;98H    Read/write data VDP
-MSX_VDPCW	equ	$99	;99H    write command to VDP
-MSX_VDPSR	equ	$99	;99H    read status from VDP
-
-; RAM PORT
-MSX_RAMIO	equ	$A8
-
-; PPI C PORT
-MSX_PPICM	equ $AB
-
-; VRAM addresses
-MSX_CHRTBL	equ 0000h
-MSX_NAMTBL	equ 1800h
-MSX_CLRTBL	equ 2000h
-MSX_SPRTBL	equ 3800h
-MSX_SPRATR	equ 1B00h
-
-; BIOS routine - Turbo-R computers only!
-MSX_CHGCPU	equ     0180h
-; Constantes de la BIOS
-MSX_MSXVER	equ     002dh
-; System variables addresses
-MSX_VDPPRT	equ	$0007	; VDP port 0
-MSX_MSLOT	equ	$F348
-MSX_CLIKSW	equ	$F3DB	; Keyboard click sound
-MSX_FORCLR	equ	$F3E9	; Foreground colour
-MSX_BAKCLR	equ	$F3EA	; Background colour
-MSX_BDRCLR	equ	$F3EB	; Border colour
-MSX_RG0SAV	equ	$F3DF 	; 	Mirror of VDP register 0 (Basic: VDP(0))
-MSX_RG1SAV	equ	$F3E0 	; 	Mirror of VDP register 1 (Basic: VDP(1))
-MSX_RG2SAV	equ	$F3E1 	; 	Mirror of VDP register 2 (Basic: VDP(2))
-MSX_RG3SAV	equ	$F3E2 	; 	Mirror of VDP register 3 (Basic: VDP(3))
-MSX_RG4SAV	equ	$F3E3 	; 	Mirror of VDP register 4 (Basic: VDP(4))
-MSX_RG5SAV	equ	$F3E4 	; 	Mirror of VDP register 5 (Basic: VDP(5))
-MSX_RG6SAV	equ	$F3E5 	; 	Mirror of VDP register 6 (Basic: VDP(6))
-MSX_RG7SAV	equ	$F3E6 	; Mirror of VDP register 7 (Basic: VDP(7))
-MSX_RG9SAV	equ	$FFE8	; Mirror of VDP register 9 (Basic: VDP(9))
-MSX_STATFL	equ	$F3E7 	; 	Mirror of VDP(8) status register (S#0)
-MSX_REPCNT  equ $F3F7
-MSX_FNKSTR	equ	$F87F	; Ubicacion textos teclas funcion (se reaprovecha como RAM, 160 bytes)
-MSX_NEWKEY	equ	$FBE5
-MSX_HIMEM	equ $FC4A	; Highest available RAM
-MSX_JIFFY	equ	$FC9E
-MSX_EXPTBL	equ	$FCC1	; Bios Slot / Expansion Slot	
-MSX_HTIMI   equ $FD9F
-MSX_SSSREG	equ $FFFF	; secondary slot select register
-
-; MSX characteristics
+; MSX machines characteristics
 MSX_MAXROWS	equ 24
 MSX_MAXCOLS	equ 32
 MSX_MAXCX	equ 255
@@ -204,110 +102,7 @@ MSX_MAXCY	equ 191
 MSX_SPRHS	equ 16
 MSX_SPRVS	equ 16
 
-; MSX MACROS
 
-	macro BORDER clr
-		push af
-        ld a,clr             ;Get data to set
-        di
-        out (MSX_VDPCW),a
-        ld a,$87             ;Get register #
-        out (MSX_VDPCW),a
-		pop af
-        ei
-	endmacro
-
-	; Set VDP for write (based on DE or HL)
-	macro SETWRT reg
-	ifdifi reg,de
-		ld a,l
-		di
-		out (MSX_VDPCW),a
-		ld a,h
-	else
-		ld a,e
-		di
-		out (MSX_VDPCW),a
-		ld a,d
-	endif
-		or 64
-		out (MSX_VDPCW),a
-		ei		
-	endmacro
-
-	; Set VDP for read (based on DE or HL)
-	macro SETRD reg
-	ifdifi reg,de
-		ld a,l
-		di
-		out (MSX_VDPCW),a
-		ld a,h
-	else
-		ld a,e
-		di
-		out (MSX_VDPCW),a
-		ld a,d
-	endif
-		and $3F
-		out (MSX_VDPCW),a
-		ei
-	endmacro
-
-	macro HALT1
-		ld hl,clock         ; previous clock setting.		
-		inc (hl)
-.wait:
-		ld a,(MSX_JIFFY)        ; current clock setting.
-		cp (hl)             ; subtract last reading.
-		jp z,.wait        ; yes, no more processing please.
-		ld (hl),a
-	endmacro
-
-	macro HALT2
-		ifdef DEBUG
-		BORDER 13
-		endif
-		ei
-		ld hl,MSX_JIFFY
-		ld a,(hl)
-.wait:
-		cp (hl)
-		jr z,.wait
-		ifdef DEBUG
-		BORDER 14
-		endif
-	endmacro
-
-	macro ADD_HL_A
-		add a,l
-		ld l,a
-		adc a,h
-		sub l
-		ld h,a	
-	endmacro
-
-	macro ADD_DE_A
-		add a,e
-		ld e,a
-		adc a,d
-		sub e
-		ld d,a	
-	endmacro
-
-	macro ADD_BC_A
-		add a,c
-		ld c,a
-		adc a,b
-		sub c
-		ld b,a	
-	endmacro
-
-	macro EX_SP_DE
-		ex de,hl
-		ex (sp),hl
-		ex de,hl
-	endmacro
-	
 ; =============================================================================================
  
 ; Block characteristics.
@@ -322,19 +117,18 @@ WATER	equ CUSTOM + 1      ; water block.
 COLECT	equ WATER + 1       ; collectable block.
 NUMTYP	equ COLECT + 1      ; number of types.
 
-; MSX system clock variable
-clock	equ	MSX_JIFFY
+CRUMBLING_SPEED	equ	7		; crumble every 8 frames. Valid values are 7 (every 8),3 (every 4) or 1 (every 2)
 
 ; Objects
 
 	if DISTYPE=ROM
 
-OBJSIZ 	equ 67				; size of each object entry
+OBJSIZ 	equ 64+3			; size of each object entry, variable bytes are moved to 
 ODTSIZ 	equ 3			   	; object data size
 		
 	else
 	
-OBJSIZ 	equ 70				; size of each object entry
+OBJSIZ 	equ 64+6			; size of each object entry
 ODTSIZ 	equ 6			   	; object data size
 
 	endif
@@ -344,11 +138,11 @@ ODTSIZ 	equ 6			   	; object data size
 NUMSPR 	equ 32              ; number of sprites.
 TABSIZ 	equ 17              ; size of each entry.
 SPRBUF 	equ NUMSPR * TABSIZ ; size of entire table.
-NMESIZ 	equ 5               ; bytes stored in nmetab for each sprite.
+NMESIZ 	equ 5               ; bytes stored in nmetab for each sprite (SPRITEPOSITIONs).
 X      	equ 3               ; new x coordinate of sprite.
 Y      	equ X + 1           ; new y coordinate of sprite.
 PAM1ST	equ 5               ; first sprite parameter, old x (ix+5).
-
+MAPSIZE	equ	WINDOWHGT * WINDOWWID	
 	
 ; Particle engine.
 
@@ -360,36 +154,47 @@ VAPTIM	equ 10				; vapour particle life time
 		
 	endif
 	
+;	include "MSX_Defs.asm"
+;	include "MSX_Macros.asm"
+	
 ; Game starts here.  No reason why screen data couldn't go between start and contrl to put them in
 ; contended RAM, leaving the code and rest of the game in uncontended memory at 32768 and beyond.
 
 start:
 	if DISTYPE=ROM
-		ld sp,$F380
+		di
+		ld sp,MSX_STACK
 	else
  		ld hl,(MSX_HIMEM)
-		dec hl
 		ld sp,hl
 	endif
- 		
-	if DISTYPE=DISK
-		call drvmotoff
-	endif
-		
-		; ld sp,$F380
-
-		; ld hl,TIMETICKS
-		; ld e,50
+		ld a,$C9
+		ld (MSX_HKEYI),a
+		ld (MSX_HTIMI),a
+		xor	a
+		ld (MSX_SCNCNT),a
+		ld (MSX_INTCNT),a		
 
 		; initialize vars
-		
 		ld hl,varbegin
 		ld de,varbegin+1
 		ld bc,(varend-varbegin)-1
 		ld (hl),0
 		ldir
 		
+		;init mapper
+		ld	a,1
+		out	(MSX_MMAP2),a
+		inc	a
+		out	(MSX_MMAP1),a
+		inc	a
+		out	(MSX_MMAP0),a
+		
+	ifdef NOBIOS
+		ld a,(biosvars+MSX_MSXVER)      	; version del MSX
+	else
 		ld a,(MSX_MSXVER)      	; version del MSX
+	endif
 		inc a
 		dec a
 		jr z,.common
@@ -397,7 +202,6 @@ start:
 		jr z,.MSX2
 		dec a
 		jr z,.MSX2P
-		; ld e,60
 		; it's a TR		
 	if EFLAG
 		ld a,255
@@ -422,31 +226,38 @@ start:
 	endif
 .notWX:
 		pop af
-		out (MSX_DEVID),a
-.MSX2:	
-		
+		out (MSX_DEVID),a		
+.MSX2:		
 		ld hl,palett
 		call setpal
-		ld a,(MSX_RG9SAV)
-		or 2
-		ld b,a
-		ld c,9
-		call MSX_WRTVDP			; forces 50Hz
-		
-.common:		
-		; ld [hl],e
+				
+		if (TVFREQ>0)
+			ld hl,MSX_RG9SAV
+			if (TVFREQ=HZ50)
+				res 1,(hl)
+			else
+				set 1,(hl)
+			endif
+			call swaphz
+		else
+			ld a,(MSX_RG9SAV)
+		endif
+		call setticks
+
+.common:
+	if (DISTYPE=ROM and DISSIZE!=48)
 		ld a,(MSX_CHGCPU)
 		cp $C3
 		ld a,$81
 		call z,MSX_CHGCPU		; if turbo available, set it
-
+	endif
 		; Set up the display if needed
 	if QFLAG=0
 	
 		ld hl,$0101
 		ld (MSX_FORCLR+1),hl    ; sets background & border colour to black
-		ld a,2
-		call MSX_CHGMOD			; set display to screen 2
+
+		call MSX_INIGRP		; set display to screen 2
 		
 		ld a,(MSX_RG1SAV)
 		or 2
@@ -454,9 +265,10 @@ start:
 		ld c,1
 		call MSX_WRTVDP			; enable 16x16 sprites
 
-		xor a
-		ld (MSX_CLIKSW),a       ; disables keyboard click
-
+		ifndef NOBIOS
+			xor a
+			ld (MSX_CLIKSW),a       ; disables keyboard click
+		endif
 	endif
 		
 		ld a,$F1
@@ -470,7 +282,12 @@ start:
 	endif
 	
 		; installs ISR
-		call instisr	
+		di
+		ld hl,isr
+		ld (MSX_HTIMI+1),hl
+		ld a,$C3
+		ld (MSX_HTIMI),a
+		ei
 
 	; When ROM, setup of variables with starting value
 	if DISTYPE=ROM
@@ -486,13 +303,7 @@ start:
 		ld bc,17			; size of score vars.
 		ld (hl),'0'        	; write '0'
 		ldir
-		ld hl,displ0
-		ld (hl),a
-		inc hl
-		ld (hl),a
-		inc hl
-		ld (hl),a
-		inc hl
+		ld hl,displ0+3
 		ld (hl),13+128
 	if SFLAG
 		inc a				; A=1
@@ -512,6 +323,17 @@ start:
 		ld de,keys
 		ld bc,22
 		ldir
+		
+		ex de,hl
+		
+		ld (hl),WINDOWTOP
+		inc hl
+		ld (hl),WINDOWLFT
+		inc hl
+		ld (hl),WINDOWHGT
+		inc hl
+		ld (hl),WINDOWWID
+		
 	; DATA command initialization
 	ifdef DATA00
 		ld hl,rdat00
@@ -597,17 +419,10 @@ start:
 		ld hl,rdat20
 		ld (rptr20),hl
 	endif
-	
+		
 	endif
 
 		jp game             ; start the game.
-
-; Don't change the order of these four.  Menu routine relies on winlft following wintop.
-
-wintop db WINDOWTOP		; top of window.
-winlft db WINDOWLFT		; left edge.
-winhgt db WINDOWHGT		; window height.
-winwid db WINDOWWID		; window width.
 
 numob  db NUMOBJ         ; number of objects in game.
 
@@ -619,7 +434,6 @@ wnlftx db (8 * WINDOWLFT)
 wnbotx db ((WINDOWTOP * 8) + (WINDOWHGT * 8) - 16)
 wnrgtx db ((WINDOWLFT * 8) + (WINDOWWID * 8) - 16)
 
-
 ; Make sure pointers are arranged in the same order as the data itself.
 
 frmptr dw frmlst         ; sprite frames.
@@ -628,22 +442,22 @@ proptr dw bprop          ; address of char properties.
 scrptr dw scdat          ; address of screens.
 nmeptr dw nmedat         ; enemy start positions.
 
-
-drvmotoff:
-		ld a,(MSX_MSLOT)		; motor off entry present?
-		ld hl,MSX_MTOFF
-		call MSX_RDSLT
-		and	a
-		ret	z			; no, no way....
-		ld iy,(MSX_MSLOT-1)	; we have it! call it now
-		ld ix,MSX_MTOFF
-		jp MSX_CALSLT
-
 	if MFLAG
 	
 ; Modify for inventory.
 
 minve:
+	if MBFLAG
+		ld l,a
+		ld a,WINDOWHGT	
+		add a,a			
+		ld (winhgt),a	
+		ld a,WINDOWWID	
+		add a,a			
+		ld (winwid),a	
+		ld a,l
+	endif
+		
 		ld hl,invdis        ; routine address.
 		ld (mod0+1),hl      ; set up menu routine.
 		ld (mod2+1),hl      ; set up count routine.
@@ -794,7 +608,7 @@ dbox9:
 dboxf:
 		push hl             ; store address on stack.
 		push bc             ; store characters remaining.	   
-		ld a,32
+		ld a,' '
 		call ptxt           ; display character.		
 		
 		ld hl,dispy         ; y coordinate.
@@ -880,6 +694,14 @@ dbox13:
 		jp m,dbox11         ; yes, finish message.
 		jr dbox13
 dbox15:
+
+	if MBFLAG
+		ld a,WINDOWWID
+		ld (winwid),a
+		ld a,WINDOWHGT
+		ld (winhgt),a
+	endif
+	
 		pop hl              ; pop message pointer from the stack.
 		ret
 
@@ -948,35 +770,45 @@ fobj:
 	endif
 
 ;
-; installs ISR
-;
-instisr:
-		di
-		ld HL,htimi
-		ld (MSX_HTIMI+1),HL
-		ld A,$C3
-		ld (MSX_HTIMI),A
-		ei
-		ret
-
-;
 ; ISR
 ;
-htimi:
-        ld (MSX_STATFL),a      ;Store this new status
+isr:
+	ifdef NOBIOS
+		push hl
+		push de
+		push bc
+		push af
+		exx
+		ex af,af
+		push hl
+		push de
+		push bc
+		push af
+		push iy
+		push ix
+        in a,($99)      ;Clear possible interrupt request
+        or a               ;Interrupt requested by VDP?		
+		jp p,.intret       ;No, skip the rest
+		ei
+	endif			
+        ld (MSX_STATFL),a	;Store this new status
         ld hl,(MSX_JIFFY)
         inc hl
         ld (MSX_JIFFY),hl		
 	if (YFLAG or XFLAG)	
 		call psgrout
-	if YFLAG
-		call music_play
+		if YFLAG
+			call music_play
+		endif
+		if XFLAG
+			call sfx_play
+		endif
 	endif
-	if XFLAG
-		call sfx_play
+	ifdef NOBIOS
+.intret:
+	else
+		pop af
 	endif
-	endif
-		pop af					; pops out the hook return address		
         pop ix              ;Restore all registers
         pop iy
         pop af
@@ -990,11 +822,10 @@ htimi:
         pop de
         pop hl
         ei
-        ret						; returns from interrupt
-		
+        ret					; returns from interrupt		
 ;
 ; Wait for keypress.
-;	   
+;
 chkkey:
 		call vsync
 		ld b,11
@@ -1006,8 +837,9 @@ chkkey:
 		ret nz
 		djnz .nokey
 		jr chkkey
-
+		
 prskey:
+		call debkey
 		call chkkey
 		
 ; Debounce keypress.
@@ -1020,7 +852,7 @@ debkey:
 		dec a
 		call MSX_SNSMAT
 		cp 255
-		jr nz,debkey
+		jr nz,debkey	
 		djnz .nokey
 		ret
 
@@ -1050,12 +882,6 @@ xspr0:
 		ld (hl),255
 		ld bc,127          ; length of table.
 		ldir
-;
-		ld hl,spratr       ; sprite attributes buffer.
-		ld de,spratr+1
-		ld (hl),0
-		ld c,127           ; length of table.
-		ldir
 		ret
 		
 	if OFLAG
@@ -1065,6 +891,7 @@ xspr0:
 	if DISTYPE=ROM
 
 iniob:
+		; ROM model
 		ld a,(numob)        ; number of objects in the game.
 		ld b,a
 		ld hl,objdta        ; objects table.
@@ -1080,8 +907,9 @@ iniob:
 		ret
 
 	else
-	
+		; RAM model
 iniob:
+		/*
 		ld ix,objdta        ; objects table.
 		ld a,(numob)        ; number of objects in the game.
 		ld b,a              ; loop counter.
@@ -1096,7 +924,25 @@ iniob:
 		add ix,de           ; point to next object.
 		djnz .loop         ; repeat.
 		ret
-
+		*/
+		ld a,(numob)        ; number of objects in the game.
+		ld b,a				; objects counter
+		ld hl,objdta+OBJSIZ-1	
+.loop:
+		ld c,h				; h must be > 3
+		ld d,h
+		ld e,l
+		dec de
+		dec de
+		dec de
+		ldd
+		ldd
+		ldd
+		ld de,OBJSIZ+3
+		add hl,de
+		djnz .loop         ; repeat.
+		ret
+		
 	endif
 	
 	endif
@@ -1124,7 +970,7 @@ vsync:
 	if EFLAG
 		call beeper
 	endif
-		call rdinputs
+		call joykey
 		jr .nowait
 		
 .novbl0:		
@@ -1146,7 +992,7 @@ vsync:
 	if EFLAG
 		call beeper
 	endif
-		call rdinputs
+		call joykey
 		jr .nowait
 		
 .novbl1:		
@@ -1165,7 +1011,7 @@ vsync:
 	if EFLAG
 		call beeper
 	endif
-		call rdinputs
+		call joykey
 		jr .nowait
 
 .novbl2:
@@ -1177,13 +1023,13 @@ vsync:
 	if SFLAG
 		call scrly
 	endif
-		call rdinputs
+		call joykey
 		jr .nowait
 		
 .novbl3:
 		push af
 		push hl
-		call rdinputs
+		call joykey
 		pop hl
 		pop af
 		cp (hl)
@@ -1210,12 +1056,6 @@ vsync:
 	endif
 		ret
 
-rdinputs:
-		ld a,(MSX_JIFFY)
-		rrca
-		ret c
-		jp joykey
-		
 	if EFLAG
 	
 beeper:
@@ -1296,14 +1136,23 @@ vsync8:
 ; Redraw the screen.
 
 redraw:
+	if MBFLAG
+		ld a,WINDOWWID
+		ld (winwid),a
+		ld a,WINDOWHGT
+		ld (winhgt),a
+	endif
+
 		call clrscrmap
 		push ix             ; place sprite pointer on stack.
+		; ld (nohide),a		; disable screen hiding
+		
 		call droom          ; show screen layout.
 	if OFLAG
 		call shwob          ; draw objects.
 	endif
 
-		HALT2
+		WAITFRAME
 		
 		ld hl,spratr
 		ld de,MSX_SPRATR
@@ -1318,6 +1167,18 @@ rpblc1:
 		call rbloc          ; draw blocks for this screen
 	endif
 		pop ix              ; retrieve sprite pointer.
+		ret
+
+; swap 50Hz/60Hz
+
+swaphz:		
+		ld a,(MSX_RG9SAV)
+		xor 2
+		ld b,a
+		ld c,9
+		push af
+		call MSX_WRTVDP			
+		pop af
 		ret
 
 ; Clear screen routine.
@@ -1413,14 +1274,30 @@ proshrnoset:
 		call proshr0
 		call proshr0
 		call proshr0
-		call proshr0
- 	
+		
 	ifdef DEBUG
+
+		call proshr0 	
 		BORDER 14
-	endif
-	
 		ret
 
+	else
+
+proshr0:
+		ld ix,(shraddr)
+		ld b,NUMSHR/(9*2)
+proshloop:
+		ld a,(ix+0)         ; on/off marker.
+		rla                 ; check its status.
+		call nc,proshx      ; on, so process it.
+		ld de,SHRSIZ*2      ; distance to next.
+		add ix,de           ; point there.
+		djnz proshloop      ; round again.
+		ld (shraddr),ix
+		ret
+	
+	endif
+	
 setshr:
 		ld a,(MSX_JIFFY)
 setshr0:
@@ -1431,6 +1308,8 @@ setshr0:
 .shrodd:
 		ld (shraddr),hl
 		ret
+
+	ifdef DEBUG
 		
 proshr0:
 		ld ix,(shraddr)
@@ -1438,14 +1317,14 @@ proshr0:
 proshloop:
 		ld a,(ix+0)         ; on/off marker.
 		rla                 ; check its status.
-;proshx:						; auto-modifying code
-
 		call nc,proshx      ; on, so process it.
 		ld de,SHRSIZ*2      ; distance to next.
 		add ix,de           ; point there.
 		djnz proshloop      ; round again.
 		ld (shraddr),ix
 		ret
+
+	endif
 
 proshx:
 		ld hl,(shrplot)
@@ -1472,8 +1351,9 @@ prosh2:
  
 
 ; Explosion shrapnel.
-
-/* shrap: ; 220
+; 220
+/*
+shrap: 
 		ld h,(shrsin >> 8) & $FF    ; Get MSB of table
 		ld l,(ix+1)
 		
@@ -1505,8 +1385,8 @@ shrap:
 		ld a,(ix+1)
 		add a,shrsin&$FF	; table offset (saving some bytes)
 		ld l,a
-		di
 		ld (stack),sp
+		di
 		ld sp,hl
 		pop de						; fetch sine
 		pop bc						; fetch cosine
@@ -1519,18 +1399,18 @@ shrap:
 		pop hl
 		add hl,bc
 		push hl				
-		ld sp,(stack)            ;parameter will overwritten
 		ei
+		ld sp,(stack)            ;parameter will overwritten
 		ret
 		
-dotl   dec (ix+5)          ; move left.
-       ret
-dotr   inc (ix+5)          ; move left.
-       ret
-dotu   dec (ix+3)          ; move up.
-       ret
-dotd   inc (ix+3)          ; move down.
-       ret
+dotl:   dec (ix+5)          ; move left.
+        ret
+dotr:   inc (ix+5)          ; move left.
+        ret
+dotu:   dec (ix+3)          ; move up.
+        ret
+dotd:   inc (ix+3)          ; move down.
+        ret
 
 ; Check coordinates are good before redrawing at new position.
 
@@ -1538,24 +1418,24 @@ chkxy:
 ;		ld (ix+7),255
 
 		ld hl,wntopx        ; window top.
-		ld a,(ix+3)         ; fetch shrapnel coordinate.
+		ld a,(ix+3)         ; fetch shrapnel Y coordinate.
 		cp (hl)             ; compare with top window limit.
 		jr c,kilshr         ; out of window, kill shrapnel.
 		inc hl              ; left edge.
-		ld a,(ix+5)         ; fetch shrapnel coordinate.
+		ld a,(ix+5)         ; fetch shrapnel X coordinate.
 		cp (hl)             ; compare with left window limit.
 		jr c,kilshr         ; out of window, kill shrapnel.
 
 		inc hl              ; point to bottom.
 		ld a,(hl)           ; fetch window limit.
-		add a,15            ; add height of sprite.
-		cp (ix+3)           ; compare with shrapnel x coordinate.
+		add a,MSX_SPRVS-1   ; add height of sprite.
+		cp (ix+3)           ; compare with shrapnel Y coordinate.
 		jr c,kilshr         ; off screen, kill shrapnel.
 		inc hl              ; point to right edge.
-		ld a,(hl)           ; fetch shrapnel y coordinate.
-		add a,15            ; add width of sprite.
+		ld a,(hl)           ; fetch shrapnel X coordinate.
+		add a,MSX_SPRVS-1   ; add width of sprite.
 		cp (ix+5)           ; compare with window limit.
-		jr nc,plot         ; off screen, kill shrapnel.
+		jr nc,plot          ; off screen, kill shrapnel.
 
 kilshr:
 		ld (ix+0),128       ; switch off shrapnel.
@@ -1569,75 +1449,80 @@ kilshr:
 
 plot:   ; ret
 
-		ld l,(ix+3)         ; x integer.
-		ld h,(ix+5)         ; y integer.
+		ld l,(ix+3)         ; y integer.
+		ld h,(ix+5)         ; x integer.
 		ld (dispx),hl       ; workspace coordinates.
 		ld a,(ix+0)         ; type.
 		and a               ; is it a laser?
 		jr z,plot1          ; yes, draw laser instead.
-/*	   
+
+; 
+; PIXEL plot
+;
+; INPUT:
+; 	H = X
+;	L = Y
 plot0:
-
-		ld a,(ix+7)
-		cp 255
-		jr z,.initplot
-
-		ld l,(ix+6)
-		ld h,a
-		SETWRT hl
-		ld a,(ix+8)
-		out (MSX_VDPDRW),a
-		ret
-
-.initplot:
-		ld a,h              ; which pixel within byte do we
-		and 7               ; want to set first?		
-		ld h,dots>>8		; Get MSB of table
-		ld l,a		
-		ld e,(hl)           ; get value.
-		call scadd          ; screen address.		
-		SETRD hl
-		ld (ix+6),l
-		ld (ix+7),h
-		in a,(MSX_VDPDRW)
-		ld (ix+8),a
-		xor e
-		ld e,a
-		SETWRT hl
-		ld a,e
-		out (MSX_VDPDRW),a
-		ret
-*/
-plot0:
-		ld a,h              ; which pixel within byte do we
-		and 7               ; want to set first?		
-		ld h,dots>>8		; Get MSB of table
-		ld l,a		
-		ld e,(hl)           ; get value.			
-		call scadd          ; screen address.		
-		SETRD hl
-		nop
-		nop
-		in a,(MSX_VDPDRW)
-		xor e
-		ld e,a
-		SETWRT hl
-		ld a,e
-		out (MSX_VDPDRW),a				
+/*
+		ld a,h              ; 5 which pixel within byte do we
+		and 7               ; 7 want to set first?		
+		ld e,a				; 5
+		call scadd          	; screen address.		
+		ld a,l				; 5 (22)
+		di					; 5
+		out (MSX_VDPCW),a	; 12
+		ld a,h				; 5
+		out (MSX_VDPCW),a	; 12
+		ld d,dots>>8		; 7 Get MSB of table
+		ld a,(de)			; 8 get value
+		ld e,a				; 5
+		in a,(MSX_VDPDRW)   ; 12 (66)
+		xor e				; 5
+		ld e,a				; 5
+		ld a,l				; 5
+		out (MSX_VDPCW),a	; 12
+		ld a,h				; 5
+		or 64				; 7
+		out (MSX_VDPCW),a	; 12
+		ei					; 5
+		ld a,e				; 5
+		out (MSX_VDPDRW),a	; 12 (73) 161		 = 139
 		ret	   
+*/
+
+
+		ld a,h              ; 5 which pixel within byte do we
+		and 7               ; 7 want to set first?		
+		ld e,a				; 5	
+		call scadd          ; 97 screen address.					
+		ld c,MSX_VDPCW		; 7
+		di					; 5
+		out (c),l			; 14	
+		out (c),h			; 14
+		ld d,dots>>8		; 7 Get MSB of table
+		ld a,(de)			; 8 get value
+		ld e,a				; 5
+plotwrt:
+		in a,(MSX_VDPDRW)   ; 12
+		xor e				; 5 (70)
+		out (c),l			; 14
+		set 6,h				; 10
+		out (c),h			; 14
+		ei					; 5
+		out (MSX_VDPDRW),a	; 12 (65)		 = 159
+		ret	   
+
+; 
+; LASER plot
+;
 plot1:
 		call scadd          ; screen address.
-		SETRD hl
-		nop
-		nop
-		in a,(MSX_VDPDRW)
-		cpl
-		ld e,a
-		SETWRT hl
-		ld a,e
-		out (MSX_VDPDRW),a		
-		ret
-
+		ld c,MSX_VDPCW		; 7
+		di					; 5
+		out (c),l			; 14	
+		out (c),h			; 14
+		ld e,255
+		jp plotwrt
 
 trail:
 		dec (ix+1)          ; time remaining.
@@ -1907,8 +1792,6 @@ dshrp:
 delshr: 
 		ld ix,SHRAPN        ; table.
 		ld b,NUMSHR         ; shrapnel pieces to process.
-		; ld d,0				; plot needs this initially
-		
 .loop:
 		ld a,(ix+0)         ; on/off marker.
 		rla
@@ -1933,39 +1816,27 @@ inishr:
 ; Check for collision between laser and sprite.
 
 lcol:
-		ld hl,SHRAPN        ; shrapnel table.
+		ld iy,SHRAPN        ; shrapnel table.
 		ld de,SHRSIZ        ; size of each particle.
 		ld b,NUMSHR         ; number of pieces in table.
 .loop:
-		ld a,(hl)           ; get type.
+		ld a,(iy+0)           ; get type.
 		and a               ; is this slot a laser?
-		jr z,.chkcol          ; yes, check collision.
+		jr nz,.nxtshr          ; no, don't check collision.
+
+		ld a,(iy+3)         ; 21 get x.
+		sub (ix+X)          ; 21 subtract sprite x.
+		cp 16               ; 8 within range?
+		jp nc,.nxtshr       ; 11 no, missed.
+		ld a,(iy+5)         ; 21 get y.
+		sub (ix+Y)          ; 21 subtract sprite y.
+		cp 16               ; 8 within range?
+		ret c      	        ; 12/6 yes, collision occurred.
+
 .nxtshr:
-		add hl,de           ; point to more shrapnel.
+		add iy,de           ; point to more shrapnel.
 		djnz .loop          ; repeat for all shrapnel.
-		ret                 ; no collision, carry not set.
-.chkcol:
-		push hl             ; store pointer to laser.
-		inc hl              ; direction.
-		inc hl              ; not used.
-		inc hl              ; x position.
-		ld a,(hl)           ; get x.
-		sub (ix+X)          ; subtract sprite x.
-;lcolh:
-		cp 16               ; within range?
-		jr nc,.missed         ; no, missed.
-		inc hl              ; not used.
-		inc hl              ; y position.
-		ld a,(hl)           ; get y.
-		sub (ix+Y)          ; subtract sprite y.
-		cp 16               ; within range?
-		jr c,.exit          ; yes, collision occurred.
-.missed:
-		pop hl              ; restore laser pointer from stack.
-		jr .nxtshr
-.exit:
-		pop hl              ; restore laser pointer.
-		ret                 ; return with carry set for collision.
+		ret   
 
 	endif
 	
@@ -1980,10 +1851,9 @@ evintr:
 		call evnt12         ; call intro/menu event.
 
 		ld hl,MAP           ; block properties.
-		ld de,MAP+1         ; next byte.
-		ld bc,767           ; size of property map.
-		ld (hl),WALL        ; write default property.
-		ldir
+		ld c,3     			; 3 * 256 bytes
+		ld a,WALL			; fill value
+		call fastfill
 	if OFLAG
 		call clrobjlst
 	endif
@@ -2010,13 +1880,14 @@ inipbl:
 		call initsc         ; set up first screen.
 		ld ix,ssprit        ; default to spare sprite in table.
 evini:  
-		call evnt13         ; initialisation.
+
+		call evnt13         ; initialisation. (GAMEINIT)
 
 ; Two restarts.
 ; First restart - clear all sprites and initialise everything.
 
 rstrt:
-		call rsevt          ; restart events.
+		call rsevt          ; restart events (evnt14 - RESTARTSCREEN).
 		call xspr           ; clear sprite table.
 		call sprlst         ; fetch pointer to screen sprites.
 		call ispr           ; initialise sprite table.
@@ -2025,7 +1896,7 @@ rstrt:
 ; Second restart - clear all but player, and don't initialise him.
 
 rstrtn:
-		call rsevt          ; restart events.
+		call rsevt          ; restart events (evnt14 - RESTARTSCREEN).
 		call nspr           ; clear all non-player sprites.
 		call xspr0
 		call sprlst         ; fetch pointer to screen sprites.
@@ -2038,6 +1909,8 @@ rstrt0:
 		ld (nexlev),a       ; reset next level flag.
 		ld (restfl),a       ; reset restart flag.
 		ld (deadf),a        ; reset dead flag.
+		; ld (nohide),a		; enable screen hiding		
+		
 	if PFLAG
 		call delshr			; erases all particles from screen
 	endif
@@ -2149,7 +2022,6 @@ newlev:
 		ld (scno),a         ; set new level number.
 		jp rstrt            ; restart, clearing all aliens.
 evwon:
-		;call dissprs
 		call evnt18         ; game completed.
 		jp tidyup           ; tidy up and return to BASIC/calling routine.
 
@@ -2163,7 +2035,6 @@ evdie:
 		ld a,(numlif)       ; number of lives.
 		and a               ; reached zero yet?
 		jp nz,rstrt         ; restart game.
-evfail:
 		call dissprs
 		call evnt17         ; failure event.
 tidyup: 
@@ -2185,7 +2056,6 @@ tidyu1:
 		ld de,hiscor        ; high score.
 		ld bc,6             ; digits to copy.
 		ldir                ; copy score to high score.
-evnewh:
 		call dissprs
 		call evnt19         ; new high score event.
 		jr tidyu0           ; tidy up.
@@ -2353,7 +2223,13 @@ putobj:
 		push hl             ; store object graphic address.
 		call wobj			; preserves visible object coords in list
 		call scadd          ; get screen address in hl.
-		SETWRT hl	
+		set 6,h				; set write permanently
+		ld a,l
+		di					;
+		out (MSX_VDPCW),a
+		ld a,h
+		ei	
+		out (MSX_VDPCW),a   ;
 		ld c,MSX_VDPDRW		
 		ex de,hl            ; switch regs. DE=VRAM
 		pop hl              ; restore graphic address. HL=graphics, DE=VRAM
@@ -2363,9 +2239,14 @@ putobj:
 		dec d				; back again to 1st row
 		set 5,d				; point to color area
 		call putrow			; 1st color row
-		inc d				; row increased and process las color row
+		inc d				; row increased and process color row
 putrow:
-		SETWRT de
+		ld a,e
+		di					;
+		out (MSX_VDPCW),a
+		ld a,d
+		ei	
+		out (MSX_VDPCW),a   ;
 putrow0:
 		ld b,16
 .loop:
@@ -2373,13 +2254,14 @@ putrow0:
 		jp nz,.loop
 		ret
 ;
+; calculates object image address from object number
+;
 ; Input:
 ;	A = object number
 ; Output:
 ;	HL = object image address
 ;
 objimg:
-		; calculates object image address from object number
 		ld d,0
 		ld a,(curobj)
 		ld e,a
@@ -2415,7 +2297,13 @@ putobj:
 		push hl             ; store sprite graphic address.
 		call wobj			; preserves visible object coords in list
 		call scadd          ; get screen address in hl.
-		SETWRT hl	
+		set 6,h
+		ld a,l
+		di					;
+		out (MSX_VDPCW),a
+		ld a,h
+		ei	
+		out (MSX_VDPCW),a   ;
 		ld c,MSX_VDPDRW		
 		ex de,hl            ; switch regs. DE=VRAM
 		pop hl              ; restore graphic address. HL=graphics, DE=VRAM
@@ -2427,7 +2315,12 @@ putobj:
 		call putrow			; 1st color row
 		inc d				; row increased and process las color row
 putrow:
-		SETWRT de
+		ld a,e
+		di					;
+		out (MSX_VDPCW),a
+		ld a,d
+		ei	
+		out (MSX_VDPCW),a   ;
 putrow0:
 		ld b,16
 .loop:
@@ -3039,7 +2932,7 @@ gp2tp:
 		ld (dispy),a	; stores x/8
 		ret
 		
-; Get print address.returns scr. add. in de (0000-17FF).
+; Get print address.Returns VRAM address in DE (0000-17FF).
 ; Requires: y(0-23), x(0-31)
 ; Must NOT modify HL
 
@@ -3053,7 +2946,7 @@ gprad:
 		ld e,a				; (y*256)+(x*8)
 		ret		
  
-; Get property buffer address of char at (dispx, dispy) in hl (0-767).
+; Get property buffer address of char at (dispx, dispy) in HL (0-767).
 ; Requires: y(0-23), x(0-31)
 
 pradd:
@@ -3066,9 +2959,9 @@ pradd:
 		ld h,a			
 		ld a,l			
 		and $E0			
-		ld l,a			; y * 32
-		ld a,(dispy)    ; fetch x coordinate.
-		and $1F         ; should be in range 0 - 31.
+		ld l,a				; y * 32
+		ld a,(dispy)    	; fetch x coordinate.
+		and $1F         	; should be in range 0 - 31.
 		ADD_HL_A
 		ret		
 
@@ -3094,7 +2987,9 @@ chradd:
 		ret
 
 ; print char pattern (without color) (MSX:OK)
-		
+; A= char
+; dispy,dispx = x,y
+; fgclr,bgclr		
 ptxt:
 		rlca                ; find address for the font char
 		rlca
@@ -3108,27 +3003,34 @@ ptxt:
 		ld hl,(grbase)      ; address of graphics.
 		add hl,de           ; add displacement.
 		call gprad          ; get screen address (in DE)
-		SETWRT de
+		SETWRT de		
 		ld bc,8*256+MSX_VDPDRW
 ldirvm0:
 		outi				; writes pattern bytes
-		jp nz,ldirvm0		
-		set 5,d				; DE=VRAM patterns, add $20 and now we're in color table
-		SETWRT de
-		ld c,8
+		jp nz,ldirvm0				
+		ld a,e
+		di					; 5
+		out (MSX_VDPCW),a
+		ld a,d
+		or $60				; color patterns + write
+		ei	
+		out (MSX_VDPCW),a   ; (51)
+		ld b,8
 		ld a,(clratt)
 .nxtrow:
 		out (MSX_VDPDRW),a	; writes color bytes
-		dec c
-		jp nz,.nxtrow
+		djnz .nxtrow
 		ret
 		
-; Print block with attributes, properties and pixels.
+; Print block with attributes, properties and pixels (saves block if adventure mode).
 
 pattr:
 		if AFLAG
 		call wbloc          ; save blockinfo	   
 		endif
+
+; Print block with attributes, properties and pixels (no saving).
+		
 pattr2:
 		ld b,a              ; store cell in b register for now.
 		ld hl,(proptr)      ; pointer to properties.
@@ -3145,7 +3047,7 @@ pattr1:
 		push hl
 		add hl,de
 		ld (hl),c           ; write property.		
-		ld de,scrmap
+		ld de,scrmap		; screen buffer
 		pop hl
 		add hl,de
 		ld a,(hl)
@@ -3174,8 +3076,13 @@ pchr:
 .ldirvm0:
 		outi
 		jp nz,.ldirvm0		
-		set 5,d				; HL=VRAM patterns, add $20 and now we're in color table
-		SETWRT de
+		ld a,e
+		di					; 5
+		out (MSX_VDPCW),a
+		ld a,d
+		or $60				; color patterns + write
+		ei	
+		out (MSX_VDPCW),a   ; (51)
 		ld b,8
 .loop:
 		outi
@@ -3191,8 +3098,6 @@ pattrnxt:
 
 		if AFLAG
 wbloc:
-;pbptr:   
-		; ld de,0000h
 		ld de,(pblkptr)
         ld hl,scno
         ldi                ; write screen.
@@ -3201,7 +3106,6 @@ wbloc:
         ldi                ; write y position of block.
         ld (de),a          ; store block number
         inc de
-        ; ld (pbptr+1),de		; auto-modifying code
 		
 		ld (pblkptr),de
         ret
@@ -3214,13 +3118,13 @@ groom:
 groomx:
 		ld de,0             ; start at zero.
 		ld hl,(scrptr)      ; pointer to screens.
-		and a               ; is it the first one?
 groom1:
-		jr z,groom0         ; no more screens to skip.
 		ld c,(hl)           ; low byte of screen size.
 		inc hl              ; point to high byte.
 		ld b,(hl)           ; high byte of screen size.
 		inc hl              ; next address.
+		and a               ; is it the first one?
+		jr z,groom0         ; no more screens to skip.
 		ex de,hl            ; put total in hl, pointer in de.
 		add hl,bc           ; skip a screen.
 		ex de,hl            ; put total in de, pointer in hl.
@@ -3245,49 +3149,109 @@ droom2:
 		ld hl,(blkptr)      ; blocks.
 		ld (grbase),hl      ; set graphics base.
 		call groom          ; get address of current room.
-		xor a               ; zero in accumulator.
-		ld (comcnt),a       ; reset compression counter.
+
+		ld de,mapbuf
+		call unpack
+			
+		ld hl,mapbuf
 		ld a,(winhgt)       ; height of window.
-		ld b,a
+		ld c,a
 droom0:
-		push bc             ; store row counter.
 		ld a,(winlft)       ; window left edge.
 		ld (dispy),a        ; set cursor position.
 		ld a,(winwid)       ; width of window.
 		ld b,a
 droom1:
 		push bc             ; store column counter.
-		ld a,(comcnt)       ; compression counter.
-		and a               ; any more to decompress?
-		jp nz,flbyt1        ; yes.
-		ld a,(hl)           ; fetch next byte.
-		inc hl              ; point to next cell.
-		cp 255              ; is this byte a control code?
-		jp nz,nocom         ; no, this byte is uncompressed.
-		ld a,(hl)           ; fetch byte type.
-		ld (combyt),a       ; set up the type.
-		inc hl              ; point to quantity.
-		ld a,(hl)           ; get quantity.
-		inc hl              ; point to next byte.
-flbyt1:
-		dec a               ; one less.
-		ld (comcnt),a       ; store new quantity.
-		ld a,(combyt)       ; byte to expand.
-nocom:		
+		ld a,(hl)
+		inc hl
 		push hl             ; store address of cell.
-		call pattr2         ; show attributes and block.		
+	if MBFLAG
+		call drwmeta		; draw metablock
+	else
+		call pattr2
+	endif
 		pop hl              ; restore cell address.
 		pop bc              ; restore loop counter.
 		djnz droom1
-		ld a,(dispx)        ; x coord.
+		ld a,(dispx)        ; y coord.
 		inc a               ; move down one line.
+	if MBFLAG
+		inc a				; move down one line.
+	endif		
 		ld (dispx),a        ; set new position.
-		pop bc              ; restore row counter.
-		djnz droom0
+		dec c
+		jr nz,droom0
+		jp enascreen
+
+/*
+; HL = pointer to RLE packed screen data
+; BC = lenght of packed screen data
+rleunpack:
+		xor a               ; zero in accumulator.
+		ld (comcnt),a       ; reset compression counter.	
+		ex de,hl	
+		ld bc,MAPSIZE		
+.nxtbyte:		
+		ld a,(comcnt)       ; compression counter.
+		and a               ; any more to decompress?
+		jp nz,.flbyt1        ; yes.
+		ld a,(de)           ; fetch next byte.
+		inc de              ; point to next cell.
+		cp 255              ; is this byte a control code?
+		jp nz,.nocom         ; no, this byte is uncompressed.
+		ld a,(de)           ; fetch byte type.
+		ld (combyt),a       ; set up the type.
+		inc de              ; point to quantity.
+		ld a,(de)           ; get quantity.
+		inc de              ; point to next byte.
+.flbyt1:
+		dec a               ; one less.
+		ld (comcnt),a       ; store new quantity.
+		ld a,(combyt)       ; byte to expand.
+.nocom:
+		ld (hl),a
+		cpi
+		jp pe,.nxtbyte
+		ret
+*/
+	
+; ------------------------------------------------------------------------------------------------------------------------------------------
+; Drawing a MetaBlock (4 tiles 8x8 => 16x16)
+; param in regA tells the block number to use, if 0 use 0,0,0,0  else use 
+; N,N+2 
+; N+1,N+3
+; ------------------------------------------------------------------------------------------------------------------------------------------
+	if MBFLAG
+drwmeta:
+		ld b,2
+drwm01:
+		push bc
+		push af
+		call pattr2		; put block N
+		dec (hl)		; decrement X, back to start column
+		dec hl
+		inc (hl)		; increment y, next line
+		pop af
+		or a
+		jr z, drwm02
+		inc a			; put block N+1
+drwm02:
+		push af
+		call pattr2
+		dec hl			
+		dec (hl)		; decrement Y, back to start line
+		pop af
+		or a
+		jr z,drwm03
+		inc a			; set block N+2
+drwm03:
+		pop bc
+		djnz drwm01		; repeat for second column
 		ret
 
-; Decompress bytes on-the-fly.
-
+	endif
+	
 	if LFLAG
 	
 ; Ladder down check.
@@ -3421,7 +3385,7 @@ cangh2:
 		dec b               ; one less row to write.
 cangh0:
 		call tstbl          ; get map address.
-		ld de,MSX_MAXCOLS      ; distance to next cell.
+		ld de,MSX_MAXCOLS   ; distance to next cell.
 cangh1:
 		call lrchk          ; standard left/right check.
 		ret nz              ; no way through.
@@ -3477,7 +3441,7 @@ gtblk:
 		ld hl,(blkptr)      ; blocks.
 		ld (grbase),hl      ; set graphics base.
 		xor a
-		jp pattr2
+		jp pchr
 
 	endif
 	
@@ -3543,8 +3507,12 @@ tded:
 
 ; Fetch block type at (dispx, dispy).
 ; Input:
-; dispx: Y coord (0-191)
-; dispy: X coord (0-255)
+; 	dispx = Y coord (0-191)
+; 	dispy = X coord (0-255)
+; Output:
+;	A = block code at (dispx, dispy)
+; Modifies:
+;	A,HL
 tstbl:
 		ld a,(dispx)        ; fetch y coord.
 		rlca                ; divide by 8,
@@ -3562,7 +3530,7 @@ tstbl:
 		rra
 		and 31              ; only want 0 - 31.
 		add a,l             ; add to displacement.
-		ld l,a              ; displacement in de.
+		ld l,a              ; displacement in hl.
 		ld a,(hl)           ; fetch byte there.
 		ret
 
@@ -3607,28 +3575,6 @@ random:
 		ret
 
 ; Keyboard test routine. (returns NC if pressed)
-
-/*
-ktest  ld c,a              ; key to test in c.
-       and 7               ; mask bits d0-d2 for row.
-       inc a               ; in range 1-8.
-       ld b,a              ; place in b.
-       srl c               ; divide c by 8
-       srl c               ; to find position within row.
-       srl c
-       ld a,5              ; only 5 keys per row.
-       sub c               ; subtract position.
-       ld c,a              ; put in c.
-       ld a,254            ; high byte of port to read.
-ktest0 rrca                ; rotate into position.
-       djnz ktest0         ; repeat until we've found relevant row.
-       in a,(254)          ; read port (a=high, 254=low).
-ktest1 rra                 ; rotate bit out of result.
-       dec c               ; loop counter.
-       jp nz,ktest1        ; repeat until bit for position in carry.
-       ret
-*/
-
 ;
 ; Checks if a key is pressed
 ;
@@ -3645,44 +3591,69 @@ ktest:
 		scf					; sets C, key NOT pressed
 		ret
 
-
-/* ktest:
-		push hl		
- 		ld hl,MSX_NEWKEY
-		add a,l
-		ld l,a
-		ld a,(hl)
-		and d
-		jr z,pressed
-		scf					; sets C, key NOT pressed
-pressed:
-		pop hl
+chkselect:
+		ld a,(select)
+		or a
+		jr z,.chghz
+		dec a
+		ld (select),a
+		ret nz
+.chghz:
+		bit 6,e
+		ret nz
+		; SELECT key pressed
+		call swaphz
+		; falls through setticks
+		
+; Sets the number of frames/sec. based on 50Hz/60Hz setting
+; Input:
+;	A = (RG9SAV)
+; Output:
+;	(TICKS) = 50/60
+;   (SELECT) = 50/60
+setticks:
+		and 2
+		ld a,HZ50
+		jr nz,.its50Hz
+		ld a,HZ60
+.its50Hz:
+		ld (ticks),a
+		ld (select),a
 		ret
- */
+		
 ;
 ; Check if STOP key is pressed
 ;		
-chkstop:
-		ld bc,$1007
-		ld a,c
+stopselect:
+		ld a,7
 		call MSX_SNSMAT
-		and b
+		ld e,a
+	ifdef NOBIOS
+		ld a,(biosvars+MSX_MSXVER)      	; version del MSX
+	else
+		ld a,(MSX_MSXVER)      	; version del MSX
+	endif		
+		or a
+		; push de
+		call nz,chkselect
+		; pop de
+		bit 4,e
 		ret nz
 .loop1
-		ld a,c
+		ld a,7
 		call MSX_SNSMAT
-		and b
+		and $10
 		jr z,.loop1
 
 .loop2
-		ld a,c
+		ld a,7
 		call MSX_SNSMAT
-		and b
+		and $10
 		jr nz,.loop2
 .loop3
-		ld a,c
+		ld a,7
 		call MSX_SNSMAT
-		and b
+		and $10
 		jr z,.loop3
 		ret
 	
@@ -3690,7 +3661,7 @@ chkstop:
 ; A/E/joyval = result bits: 0,fire3,fire2,fire,up,down,left,right
 
 joykey:
-		call chkstop
+		call stopselect
 		ifdef DEBUG
 		BORDER 7
 		endif
@@ -3843,7 +3814,7 @@ dmsg2:
 		ld hl,scrmap
 		pop de				; restores scrmap buffer pointer
 		add hl,de			; start of string in scrmap
-		ld (hl),255
+		ld (hl),255                     ; mark as dirty in scrmap
 		jp dscor2
 .btzero:
 
@@ -3860,7 +3831,7 @@ dmsg2:
 		ld d,h
 		ld e,l
 		inc e
-		ld (hl),255
+		ld (hl),255                     ; mark as dirty in scrmap
 		ldir		
 		jp dscor2         	; job done.
 .wrapped:	; half of the message is in the bottom and the rest wraps to coord 0,0
@@ -3874,7 +3845,7 @@ dmsg2:
 		ld c,l
 		ld hl,scrmap
 		ld de,scrmap+1
-		ld (hl),255
+		ld (hl),255                     ; mark as dirty in scrmap
 		ldir	
 		pop bc
 		pop de
@@ -3986,7 +3957,9 @@ bchar:
 		ld hl,(grbase)      ; address of graphics.
 		add hl,de           ; add displacement.
 		call gprad          ; get screen address (in DE)
-		dec d		
+
+/*		
+		dec d	
 		ld b,2
 .nxtchar:		
 		inc d
@@ -4001,8 +3974,54 @@ bchar:
 		out (MSX_VDPDRW),a
 		jr nz,.nxtrow
 		djnz .nxtchar
+*/
+
+		ld b,2
+.nxtchar:		
+
+		ld a,e
+		di
+		out (MSX_VDPCW),a
+		ld a,d
+		or $40
+		out (MSX_VDPCW),a
+		ei	
+
+		ld c,4
+.nxtrow:
+		ld a,(hl)
+		out (MSX_VDPDRW),a
+		inc hl
+		dec c
+		nop					; VDP slowdown		
+		out (MSX_VDPDRW),a
+		jr nz,.nxtrow
+		inc d
+		djnz .nxtchar
+		
 		dec d
-		set 5,d				; DE=VRAM patterns, add $20 and now we're in color table
+		dec d
+		ld a,d
+		or $60
+		ld d,a
+
+		ld a,(clratt)
+		ld c,MSX_VDPCW
+		ld l,2
+nxtchar2:		
+        di
+        out (c),e
+        ei		
+        out (c),d
+		ld b,8
+nxtfile2:
+		out (MSX_VDPDRW),a
+		djnz nxtfile2
+		inc d
+		dec l
+		jr nz,nxtchar2
+
+/*
 		ld b,2
 nxtchar2:		
 
@@ -4011,7 +4030,7 @@ nxtchar2:
         out (MSX_VDPCW),a
         ld a,d
 		ld c,8
-        or 01000000b       ;for write, set bit 6 high
+        or 64       		;for write, set bit 6 high
         out (MSX_VDPCW),a
         ei		
 
@@ -4021,7 +4040,10 @@ nxtfile2:
 		dec c
 		jr nz,nxtfile2
 		inc d
-		djnz nxtchar2				
+		djnz nxtchar2	
+*/
+
+		
 bchar1 call nexpos         ; display position.
        jp nz,bchar2        ; not on a new line.
 bchar3 inc (hl)            ; newline.
@@ -4116,6 +4138,12 @@ pspr:
 		ret
 pspr2:
 		ld (ogptr),ix       ; store original sprite pointer.
+		ld h,a
+		ld a,(ix+3)			; saves sprite coordinates as backup
+		ld (ix+8),a
+		ld a,(ix+4)
+		ld (ix+9),a
+		ld a,h
 		call pspr3          ; do the routine.
 ; rtorg:
 		ld ix,(ogptr)       ; restore original pointer to sprite.
@@ -4129,11 +4157,11 @@ pspr4:
 ;
 ; Makes an indirect jump based on the contents of HL
 ;
-jumphl:		
+jumphl:	
 		ld a,(hl)
 		inc hl
 		ld h,(hl)
-		ld l,a			
+		ld l,a
 		jp (hl)
 
 ; Address of each sprite type's routine.
@@ -4176,9 +4204,9 @@ chkimg:
 		inc a				; has already been mapped?
 		jr nz,.nxtspr
 		ld a,c
-		ex de,hl
+		ex de,hl			; saving de for free
  		call mapsprite		; the sprite has not been mapped ($FF), do it now
-		ex de,hl
+		ex de,hl			; restore de
 .nxtspr:		
 		add ix,de           ; next sprite.
 		djnz .loop          ; repeat for remaining sprites.
@@ -4187,8 +4215,14 @@ chkimg:
 		endif
 		ret
  
+disscreen:
+		jp MSX_DISSCR
+
+enascreen:
+		jp MSX_ENASCR
+		
 dissprs:
-		ld a,208			; disable all sprites
+		ld a,MSX_HIDE_SPRITES	; disable all sprites
 		ld hl,MSX_SPRATR
 		jp MSX_WRTVRM
 
@@ -4200,14 +4234,16 @@ dissprs:
 ;	B: bytes to copy (0-255, 0 is 256 bytes)
 ; Output:
 ;	None. 
+
+
 ;		 
 ram2vram:
 		ld c,MSX_VDPCW
         di
         out (c),e
         set 6,d			; high byte set for write
-        out (c),d
         ei	
+        out (c),d
 		dec c 
 .loop:		
 		[8] outi
@@ -4222,15 +4258,14 @@ ram2vram:
 ;	B: bytes to copy (0-255, 0 is 256 bytes)
 ; Output:
 ;	None. 
-;
-		 
+;		 
 ram2vram_slow:
 		ld c,MSX_VDPCW
         di
         out (c),e
         set 6,d			; high byte set for write
-        out (c),d
         ei	
+        out (c),d
 		dec c 
 .loop:		
 		outi
@@ -4253,7 +4288,7 @@ buildspr:
 		ld a,(ix+0)			; get sprite type
 		inc a
 		jr nz,.ison			; is the sprite active?
-		ld a,$D1			; not active
+		ld a,MSX_HIDE_SPRITE	; not active
 		ld (hl),a			; Y
 		inc l
 		inc l
@@ -4273,7 +4308,7 @@ buildspr:
 		ld a,(ix+1)
 		call gfrm
 		ld l,(hl)
-		ld h,(mapspr>>8)&$FF				
+		ld h,mapspr>>8				
 		ld a,(hl)			; gets real frame from mapspr table
 		add a,(ix+2)
 		add a,a
@@ -4289,7 +4324,7 @@ buildspr:
 		ld de,TABSIZ		
 		add ix,de           ; next sprite.
 		djnz .loop          ; repeat for remaining sprites.
-		ld a,$D0			; no more sprite from here
+		ld a,MSX_HIDE_SPRITES	; no more sprite from here
 		ld (hl),a
 
 ; ----------------------------------
@@ -4304,44 +4339,52 @@ sprflick:
 		jr .no5th
 .flick:
 		; sort sprites into two separate lists (aligned with 5th & not aligned)
-		and 31
-		ld de,spratr2		; not aligned list
+		and 31				; get 5th sprite plane number
+		ld e,a
+		ld a,(highslot)
+		cp e
+		jr c,.no5th			; 5th has been removed?, no flicker then...
+		;
+		ex af,af			; save number of sprites in screen
+		ld a,e
+		ld de,spratr2		; new sprite attribute table
 		push de
 		ld d,h
 		ld e,l
 		add a,a
-		add a,a
-		add a,e
+		add a,a				; 5th sprite plane * 4
+		add a,e				; DE now points to 5th sprite plane attributes
 		ld e,a
-		ld a,(highslot)
+		;
+		ex af,af			; restores number of sprites in screen
 		ld b,a				; number of sprites to check
-		ld a,(de)			
+		ld a,(de)			; 
 		ld c,a				; get C=Y-coord of 5th sprite
 		ld de,colltab		; aligned with 5th list
 .lp:
-		ld a,(hl)
-		sub c
-		jr nc,.bottom
-		neg
+		ld a,(hl)			; get Y coord of sprite from master sprite attribute table
+		sub c				 
+		jr nc,.bottom		; compare both Y coords
+		neg					; if 5th Y coord is greater, negate the difference
 .bottom:		
-		cp MSX_SPRVS		; compare with sprite vertical size
-		jr nc,.noovlp
-		push bc
+		cp MSX_SPRVS		; compare the difference with sprite vertical size
+		jr nc,.noovlp		; if diff > sprite vertical size, there's no vertical overlapping
+		push bc					
 		ldi
 		ldi
 		ldi
-		ldi
+		ldi					; store sprite attributes in colltab
 		pop bc
 		jr .nxt
 .noovlp:
-		EX_SP_DE
+		EX_SP_DE			; swaps lists colltab<>spratr2
 		push bc
 		ldi
 		ldi
 		ldi
-		ldi
+		ldi					; now store sprite attributes in spratr2
 		pop bc
-		EX_SP_DE
+		EX_SP_DE			; restores lists pointers
 .nxt:
 		djnz .lp
 		; rotate SAT segments (only 5th related sprites)
@@ -4370,7 +4413,7 @@ sprflick:
 		ld c,a
 		ld hl,colltab
 		ldir				; copy 2nd half
-		ld a,$D0			; no more sprite from here
+		ld a,MSX_HIDE_SPRITES	; no more sprite from here
 		ld (de),a
 		ld hl,spratr2
 .no5th:
@@ -4432,9 +4475,9 @@ dumpspr:
 		ld hl,(sprptr)
 		ld de,MSX_SPRATR
 		ifdef FASTVRAMDUMP
-		call ram2vram
+			call ram2vram
 		else
-		call ram2vram_slow
+			call ram2vram_slow
 		endif
 		ifdef DEBUG
 		BORDER 14
@@ -4442,23 +4485,24 @@ dumpspr:
 		ret
 		
 ; Drop into screen address routine. (MSX:OK)
-; This routine returns in HL a screen address for (dispx, dispy) in hl. Must not modify DE
+; This routine returns in HL a screen address for (dispx, dispy). Must not modify DE
 
 scadd:
-		ld a,(dispx)
-		ld l,a
-		and $F8
-		rrca
-		rrca
-		rrca
-		ld h,a
-		ld a,l
-		and $07
-		ld l,a			; HL= ((y/8)*256+y%8)
-		ld a,(dispy)
-		and $F8			; A = (x/8)*8
-		ADD_HL_A
-		ret	
+		ld a,(dispx)	; 14
+		ld l,a			; 5
+		and $F8			; 8
+		rrca			; 5
+		rrca			; 5
+		rrca			; 5
+		ld h,a			; 5 (47)
+		ld a,l			; 5
+		and $07			; 8
+		ld l,a			; 5
+		ld a,(dispy)	; 14
+		and $F8			; 8
+		or l			; 5
+		ld l,a			; 5 (97)
+		ret						
 		
 ; Animates a sprite.
 
@@ -4494,37 +4538,38 @@ animbk:
 
 ; Check for collision with other sprite, strict enforcement.
 ; Input:
-;	B = NUmber of sprite to check for collision
+;	C = NUmber of sprite to check for collision
 sktyp:  
 		ld a,(highslot)
 		and a
 		ret z				; no sprites, nothing to do
+		ld b,a
 		ifdef DEBUG
 		BORDER 4
 		endif
+	
+	if HCFLAG=1
 		ld a,(MSX_STATFL)
 		and 00100000b		; check hardware sprites collision
 		jr z,.nocoll		; no collisions, skip routine
-							; There's a collision, find it
+	endif
+	
+		; There's a collision, find it
+		
 		ld hl,sprtab        ; sprite table.
 .loop: 
-		ex af,af            ; store loop counter.
 		ld (skptr),hl       ; store pointer to sprite.
 		ld a,(hl)           ; get sprite type.
-		cp b                ; is it the type we seek?
+		cp c
 		jr z,coltyp         ; yes, we can use this one.
+
 .sktyp1: 
-		ld hl,(skptr)       ; retrieve sprite pointer.
-		
+		ld hl,(skptr)       ; retrieve sprite pointer.		
 		ld de,TABSIZ        ; size of each entry.
 		add hl,de           ; point to next sprite in table.
-		
-		ex af,af           ; restore loop counter.
-		dec a               ; one less iteration.
-		jp nz,.loop        ; keep going until we find a slot.
-		
-		ld hl,0             ; default to ROM address - no sprite.
-		ld (skptr),hl       ; store pointer to sprite.
+		djnz .loop
+		ld c,b
+		ld (skptr),bc       ; store pointer to sprite.
 		or h                ; don't return with zero flag set.
 .nocoll:
 		ifdef DEBUG
@@ -4534,44 +4579,41 @@ sktyp:
 
 coltyp:
 		ld a,(ix+0)         ; current sprite type.
-		cp b                ; seeking sprite of same type?
-		jr z,.colty1         ; yes, need to check we're not detecting ourselves.
+		cp c
+		jr nz,.colty0       ; yes, need to check we're not detecting ourselves.
+		ld d,ixh
+		ld e,ixl
+		ex de,hl            ; flip hl into de.
+		sbc hl,de           ; compare the two.
+		ex de,hl            ; restore hl.
+		jp z,sktyp.sktyp1   ; addresses are identical.		
 .colty0:
 		ld de,X             ; distance to x position in table.
 		add hl,de           ; point to coords.
-		
 		ld e,(hl)           ; fetch x coordinate.
 		inc hl              ; now point to y.
 		ld d,(hl)           ; that's y coordinate.
 ; Drop into collision detection.
-;colc16:
 		ld a,(ix+X)         ; x coord.
 		sub e               ; subtract x.
-		jr nc,.colc1a        ; result is positive.
+		jp nc,.colc1a       ; result is positive.
 		neg                 ; make negative positive.
 .colc1a:
 		cp 16               ; within x range?
-		jr nc,sktyp.sktyp1        ; no - they've missed.
-		ld c,a              ; store difference.
+		jp nc,sktyp.sktyp1  ; no - they've missed.
+		ld e,a				; store difference.
 		ld a,(ix+Y)         ; y coord.
 		sub d               ; subtract y.
-		jr nc,.colc1b        ; result is positive.
+		jp nc,.colc1b       ; result is positive.
 		neg                 ; make negative positive.
 .colc1b:
 		cp 16               ; within y range?
-		jr nc,sktyp.sktyp1        ; no - they've missed.
-		add a,c             ; add x difference.
+		jp nc,sktyp.sktyp1  ; no - they've missed.
+		add a,e             ; add x difference.
 		cp 26               ; only 5 corner pixels touching?
-		ret c               ; carry set if there's a collision.
-		jp sktyp.sktyp1           ; try next sprite in table.
-.colty1:
-		push ix             ; base sprite address onto stack.
-		pop de              ; pop it into de.
-		ex de,hl            ; flip hl into de.
-		sbc hl,de           ; compare the two.
-		ex de,hl            ; restore hl.
-		jr z,sktyp.sktyp1   ; addresses are identical.
-		jp .colty0
+		jp nc,sktyp.sktyp1  ; try next sprite in table.
+		ret                 ; carry set if there's a collision.
+
 
 ; Display number.
 ;
@@ -4598,7 +4640,8 @@ initsc:
 
 ; Test screen.
 ;
-tstsc  ld hl,mapdat-MAPWID ; start of map data, subtract width for negative.
+tstsc:
+       ld hl,mapdat-MAPWID ; start of map data, subtract width for negative.
        ld b,a              ; store room in b for now.
        add a,MAPWID        ; add width in case we're negative.
        ld e,a              ; screen into e.
@@ -4684,7 +4727,7 @@ gravd:
 gravd0:
 		call cangd          ; can we go down?
 		jr nz,gravst        ; can't move down, so stop.
-		inc (ix+3)          ; adjust new x coord.
+		inc (ix+3)          ; adjust new y coord.
 		djnz gravd0
 		ret
 gravu:
@@ -4693,7 +4736,7 @@ gravu:
 gravu0:
 		call cangu          ; can we go up?
 		jp nz,ifalls        ; can't move up, go down next.
-		dec (ix+3)          ; adjust new x coord.
+		dec (ix+3)          ; adjust new y coord.
 		djnz gravu0
 		ret
 gravst:
@@ -4726,14 +4769,14 @@ ogrv1  and a               ; any movement required?
 ogrvd  ld b,a              ; less than 128, go down. Set pixels to move.
 ogrvd0 call cangd          ; can we go down?
        jr nz,ogrvst        ; can't move down, so stop.
-       inc (ix+3)          ; adjust new x coord.
+       inc (ix+3)          ; adjust new y coord.
        djnz ogrvd0
        ret	   
 ogrvu  neg                 ; flip the sign so it's positive.
        ld b,a              ; set pixels to move.
 ogrvu0 call cangu          ; can we go up?
        jr nz,ogrv2         ; can't move up, go down next.
-       dec (ix+3)          ; adjust new x coord.
+       dec (ix+3)          ; adjust new y coord.
        djnz ogrvu0
        ret	   
 ogrvst ld e,(ix+14)        ; get index to table.
@@ -4800,7 +4843,9 @@ tfall:
 ;
 gfrm:
 		rlca                ; multiple of 2.
-		ld hl,(frmptr)      ; frames used by game.
+		; ld hl,(frmptr)      ; table of sprite frames used by game.
+		
+		ld hl,frmlst
 		ADD_HL_A
 		ret
 
@@ -4842,7 +4887,7 @@ nspr:
 		
 ; Two initialisation routines.
 
-; HL is already pointing to start of sprites for this screen (nmedat)
+; HL is already pointing to start of sprites for this screen (nmedat / SPRITEPOSITIONS)
 ; Initialise sprites - copy everything from list to table.
 ;
 ispr:	
@@ -4858,7 +4903,7 @@ ispr:
 		ld a,(ix+0)         ; next type.
 		inc a
 		jr z,.copyspr       ; no, process this one.
-		ld de,TABSIZ        ; distance to next odd/even entry.
+		ld de,TABSIZ        ; distance to next entry.
 		add ix,de           ; next sprite.
 		djnz .loop1         ; repeat for remaining sprites.
 		jr .exit
@@ -4875,7 +4920,7 @@ kspr:
 		xor a
 		ld (nsprite),a		; reset first sprite frame number in VRAM		
 		ex de,hl
-		call dissprs		; disable all sprites to mask them
+		call dissprs		; hide all sprites
 		ex de,hl		
 		ld b,NUMSPR         ; sprite slots in table.
 		ld ix,sprtab        ; sprite table.
@@ -4886,6 +4931,7 @@ kspr:
 		and a               ; is it a player sprite?
 		jr nz,.loop1        ; no, add to table as normal.		
 		inc hl
+		ld a,(hl)			; sprite image number from SPRITEPOSITIONS
 		call mapsprite		; no player set but sprite pattern mapped to VRAM
 		dec hl		
 		ld de,NMESIZ        ; distance to next item in list.
@@ -4937,7 +4983,7 @@ cpsp:
 		pop bc
 		pop hl              ; restore hl.
 		pop ix              ; restore ix.
-		ld de,TABSIZ        ; distance to next odd/even entry.
+		ld de,TABSIZ        ; distance to next entry.
 		add ix,de           ; next sprite.
 		ret
 
@@ -4945,7 +4991,7 @@ cpsp:
 mapsprite:					; initialize mapspr table
 		push hl
 		push bc
-		call gfrm
+		call gfrm			; HL = real sprite frames pointer in RAM for sprite number A
 		ld a,(hl)			; get real frame in RAM
 		and 127				; maximum 128 frames in RAM (correct?)
 		ld e,a
@@ -4959,9 +5005,9 @@ mapsprite:					; initialize mapspr table
 		add a,(hl)			; next sprite frame available after adding frames size
 		ld (nsprite),a		; stores it as new available sprite frame
 		dec hl				; restore HL pointer to start of frmlst
-		call spradr			; HL = sprite frame list position, DE = pointer to actual sprite frame in VRAM, BC = lenght of data		
+		call spradr			; HL = sprite frame list position, DE = pointer to actual sprite frame in VRAM, BC = lenght of data	
 		call MSX_SETWRT
-		ex de,hl			; HL = sprite RAM data address, DE = spriVte RAM data address, BC = lenght of data
+		ex de,hl			; HL = sprite RAM data address, DE = sprite RAM data address, BC = lenght of data
 nxtsprbyt:		
 		ld a,(hl)
 		out (MSX_VDPDRW),a
@@ -4994,10 +5040,10 @@ mult32:
 		rrca
 		rrca
 		ld c,a              
-		and 31              
+		and $1F              
 		ld b,a              
 		ld a,c              
-		and 224             
+		and $E0             
 		ld c,a				; BC = A * 32		
 		ret
 
@@ -5005,16 +5051,16 @@ mult32:
 	
 clrobjlst:
 		ld hl,objlist
-		ld c,1     
-		ld a,255
+		ld c,1     			; 1 * 256 bytes
+		ld a,255			; fill value
 		jp fastfill
 	
 	endif
 		
 clrscrmap:
 		ld hl,scrmap
-		ld c,3     
-		ld a,255
+		ld c,3     			; 3 * 256 bytes
+		ld a,255			; fill value
 ;
 ; fast fills RAM areas starting in addresses multiple of 4 
 ; Input:	C=number of 256 bytes blocks to fill
@@ -5036,10 +5082,16 @@ fastfill:
 		dec c
 		jr nz,fastfill       ;outer loop. repeat for next c*256 bytes.
 		ret		
-		 
+	 
 ; Clear the play area window.
 
 clw:
+	if PFLAG
+	
+		call inishr
+		
+	endif
+	
 		ld hl,(wintop)
 		ld (dispx),hl
 		call gprad          ; get print address in DE.
@@ -5085,7 +5137,7 @@ clw:
 
 scrly:
  	ifdef DEBUG
-		BORDER 7
+		BORDER 11
 	endif
 		ld a,(scrlyoff)
 		or a
@@ -5193,8 +5245,6 @@ scrltxt:
 		BORDER 14
 		endif
 		ret
-
-
 				
 	   ; bc= width*256+msg.number
 iscrly: 
@@ -5289,24 +5339,199 @@ digr   ld l,(ix+3)
 
 	endif
 
+	if CRFLAG
 
-	; include "PT3SFX.asm"
-	include "PT3-ROM.asm"
-	include "ayFX-ROM.asm"
+;
+; Crumbling blocks routine
+; Input:	None
+; Output:	None
+; Modifies: AF,BC,HL,DE
+;
 
+crumble:	
+ 		ld a,(frmno)
+		and CRUMBLING_SPEED
+		ret nz				; executed only every 1/8 of frames		
+		ld h,(ix+4)			; x coordinate
+		ld a,(ix+3)			; y coordinate
+		add a,16
+		ld l,a
+		ld (dispx),hl		
+		and 6
+		ret nz
+		call gp2tp			; dispx/y now has text coords
+		call pradd
+		ld de,scrmap
+		add hl,de	
+		ex de,hl
+		ld hl,dispy
+		ld a,(de)
+		cp 9
+		call nc,.crumb
+		inc (hl)
+		inc de
+		ld a,(de)
+		cp 9
+		call nc,.crumb
+		inc (hl)
+		inc de
+		ld a,(ix+4)			; get x coord
+		and 7				; multiple of 8?
+		ret z				; return (only two blocks crumb) 
+		ld a,(de)
+		cp 9
+		ret c
+.crumb:	
+		push de
+		inc a
+		cp 17
+		jr c,.noblank		; if block < 17, update it 
+		xor a				; else, empty block
+.noblank:
+		call pattr
+		dec (hl)			; undo x+1 position
+		pop de
+		ret
 
-	if XFLAG
+	endif
+
+	if RTFLAG
 	
-sfxbank:	incbin "..\resources\sfx.afb"
+; User routine for rotational controls.
+; To use, set up the angle (0-255) of travel in DIRECTION, then call THRUST with a single parameter for speed (eg THRUST 4).
+; This routine uses AIRBORNE and JUMPHEIGHT to store fractional coordinates but leaves SETTINGA and SETTINGB free. 
+; Jonathan Cauldwell, 22nd October 2020.
+
+thrust:
+		ld b,a                      ; speed in b for now.
+		ld (usrspd),a               ; store speed.
+		ld l,(ix+13)                ; y fraction.
+		ld h,(ix+14)                ; x fraction.
+		push hl                     ; store old fractions.
+
+		/*
+		ld h,(sintab>>8)&$FF
+		ld l,(ix+10)
+		ld a,(hl)
+		*/
+		
+		ld hl,sintab                ; sine table.
+		ld e,(ix+10)                ; direction.
+		ld d,0                      ; no high byte.
+		add hl,de                   ; point to entry.
+		ld a,(hl)                   ; get the sine.
+
+		ld (usrsgn),a               ; store sign.
+		and 127                     ; remove sign.
+		ld h,a                      ; copy to first multiplier.
+		ld d,b                      ; get speed.
+		call imul                   ; multiply together.
+		ld e,(ix+13)                ; y fraction.
+		ld d,(ix+3)                 ; y integer.
+		ld a,(usrsgn)               ; get sign.
+		rla                         ; is it negative?
+		jr nc,thrust0               ; yes.
+		add hl,de                   ; just add.
+		jr thrust1                  ; skip subtraction.
+thrust0:
+		ex de,hl                    ; inertia in hl, force in de.
+		sbc hl,de                   ; subtract force.
+thrust1:
+		ld (ix+3),h                 ; set integer.
+		ld (ix+13),l                ; set fraction.
+		ld a,(ix+10)                ; direction.
+		add a,64                    ; shift 90 degrees to get cosine.
+		
+		
+		/*
+		ld h,(sintab>>8)&$FF
+		ld l,a
+		ld a,(hl)
+		*/
+		
+		ld e,a                      ; displacement to value.
+		ld d,0                      ; no high byte.
+		ld hl,sintab                ; sine table.
+		add hl,de                   ; point to entry.
+		ld a,(hl)                   ; get the cosine.
+		
+		ld (usrsgn),a               ; store sign.
+		and 127                     ; remove sign.
+		ld h,a                      ; copy to first multiplier.
+		ld a,(usrspd)               ; get speed.
+		ld d,a                      ; second multiplier.
+		call imul                   ; multiply together.
+		ld e,(ix+14)                ; x fraction.
+		ld d,(ix+4)                 ; x integer.
+		ld a,(usrsgn)               ; get sign.
+		rla                         ; is it negative?
+		jr nc,thrust2               ; yes.
+		add hl,de                   ; just add.
+		jr thrust3                  ; skip subtraction.
+thrust2:
+		ex de,hl                    ; inertia in hl, force in de.
+		sbc hl,de                   ; subtract force.
+thrust3:
+		ld (ix+4),h                 ; x set integer.
+		ld (ix+14),l                ; x set fraction.
+		ld a,4                      ; displacement.
+		add a,h                     ; add to integer.
+		ld h,a                      ; set horizontal.
+		ld a,(ix+3)                 ; get y.
+		add a,4                     ; add displacement.
+		ld l,a                      ; copy to second coordinate register.
+		ld (dispx),hl               ; set coordinates to find.
+		call tstbl                  ; check block.
+		ld b,2                      ; cells to test vertically.
+		ld de,MSX_MAXCOLS-1         ; distance between cell lines minus one.
+thrust5:
+		ld a,(hl)                   ; get block there.
+		cp WALL                     ; is it a wall?
+		jr z,thrust4                ; yes, can't move there.
+		inc l                       ; next cell.
+		ld a,(hl)                   ; get block there.
+		cp WALL                     ; is it a wall?
+		jr z,thrust4                ; yes, can't move there.
+		add hl,de                   ; next row down.
+		djnz thrust5                ; repeat for all rows.
+		pop hl                      ; restore old fractions.
+		ret
+thrust4:
+		pop hl                      ; restore old fractions.
+		ld (ix+13),l                ; reset y.
+		ld (ix+14),h                ; reset x.
+		ld a,(ix+8)                 ; previous y.
+		ld (ix+3),a                 ; restore it.
+		ld a,(ix+9)                 ; previous x.
+		ld (ix+4),a                 ; restore that too.
+		ret
+	   
+sintab:
+		db 0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45
+		db 48,51,54,57,59,62,65,67,70,73,75,78,80,82,85,87
+		db 89,91,94,96,98,100,102,103,105,107,108,110,112,113,114,116
+		db 117,118,119,120,121,122,123,123,124,125,125,126,126,126,126,126
+		db 127,126,126,126,126,126,125,125,124,123,123,122,121,120,119,118
+		db 117,116,114,113,112,110,108,107,105,103,102,100,98,96,94,91
+		db 89,87,85,82,80,78,75,73,70,67,65,62,59,57,54,51
+		db 48,45,42,39,36,33,30,27,24,21,18,15,12,9,6,3
+		db 128,131,134,137,140,143,146,149,152,155,158,161,164,167,170,173
+		db 176,179,182,185,187,190,193,195,198,201,203,206,208,210,213,215
+		db 217,219,222,224,226,228,230,231,233,235,236,238,240,241,242,244
+		db 245,246,247,248,249,250,251,251,252,253,253,254,254,254,254,254
+		db 255,254,254,254,254,254,253,253,252,251,251,250,249,248,247,246
+		db 245,244,242,241,240,238,236,235,233,231,230,228,226,224,222,219
+		db 217,215,213,210,208,206,203,201,198,195,193,190,187,185,182,179
+		db 176,173,170,167,164,161,158,155,152,149,146,143,140,137,134,131
 	
 	endif
 	
 	if PFLAG
 
-; some aligned data
+; some aligned data (88 bytes)
 
 	   ALIGN 256
-
+	
 dots:		db 128,64,32,16,8,4,2,1   
 shrptr:		dw laser          ; laser.
 			dw trail          ; vapour trail.
@@ -5325,11 +5550,24 @@ shrsin: 	dw 0,1024,391,946,724,724,946,391
 	endif
 
 
-; User routine.  Put your own code in here to be called with USER instruction.
+; User routine.  Put your own code inside user.asm file to be called with USER instruction.
 ; if USER has an argument it will be passed in the accumulator.
+	if UFLAG
+	
+		include "User.asm"
 
-user:
-		ret
+	endif
+	
+	include "Pletter_unpack.asm"
+	; Music & SFX routines
+	include "PT3-ROM.asm"
+	include "ayFX-ROM.asm"
+
+	if XFLAG
+	
+sfxbank:	incbin "..\resources\sfx.afb"
+	
+	endif	
 
 ; Game-specific data and events code generated by the compiler ------------------
 
@@ -5339,7 +5577,7 @@ user:
 ;
 ; ======================================================================================
 
-; Variables that NEED to be initialized when in RAM mode can be autoinitialized for free
+; Variables that NEED to be initialized and when in RAM mode can be autoinitialized for free
 
 	if DISTYPE!=ROM
 
@@ -5438,40 +5676,39 @@ rptr19:		dw rdat19
 rptr20:		dw rdat20
 	endif
 
+; Don't change the order of these four.  Menu routine relies on winlft following wintop.
 
+wintop		db WINDOWTOP		; top of window.
+winlft		db WINDOWLFT		; left edge.
+winhgt		db WINDOWHGT		; window height.
+winwid		db WINDOWWID		; window width.
+
+	endif
+
+	if DISTYPE=ROM		
+
+endprogram:	equ $
+
+	else
 	
+endprogram:	equ main + ::0
+
 	endif
 	
- ; clock  db 0              ; last clock reading.
+;
+;
+;
+	output ram_vars.tmp
 
-endmain:	equ $
-
-; Fill the rest of the page
-
-	if DISTYPE=ROM
-
-	output rom_filler.bin
-
-	org endmain
-	
-		if ($ & $8000)!=0
-			block $4000-($-8000h),255
-		else
-			block $4000-($-4000h),255
-		endif
+	defpage 0, $8080	
 		
-	endif
-;
-;
-;
-		output main_vars.tmp
+	if DISTYPE=ROM	
 
-	if DISTYPE=ROM
-	
-		org $E000
+		phase $E000 ; ROM model variables that need to be initialized. Minimum 8KB RAM needed
 
-varbegin: equ $
+varbegin: equ $	
 
+; Don't change the order of these 5 variables.
 score:		ds 6		; player's score  000000 .
 hiscor:		ds 6		; high score  000000 .
 bonus:		ds 6		; bonus  000000 .
@@ -5566,58 +5803,60 @@ rptr19:		ds 2
 	ifdef DATA20
 rptr20:		ds 2
 	endif
+
+	else
 	
-	else			; RAM model variables	
+		phase endprogram ; ; if DISTYPE=ROM RAM model variables	
 		
-		org endmain
-
-varbegin: equ $
-
-	endif
+varbegin: equ $	
 	
+	endif 
+
+; RAM variables (initialization not needed)
+
 loopa:		ds 1			; loop counter system variable. (23681)
 loopb:		ds 1			; loop counter system variable. (23728)
 loopc:		ds 1			; loop counter system variable. (23729)	
-vara:		ds 1			;   ds 1              general-purpose variable.
-varb:		ds 1			;   ds 1              general-purpose variable.
-varc:		ds 1			;   ds 1              general-purpose variable.
-vard:		ds 1			;   ds 1              general-purpose variable.
-vare:		ds 1			;   ds 1              general-purpose variable.
-varf:		ds 1			;   ds 1              general-purpose variable.
-varg:		ds 1			;   ds 1              general-purpose variable.
-varh:		ds 1			;   ds 1              general-purpose variable.
-vari:		ds 1			;   ds 1              general-purpose variable.
-varj:		ds 1			;   ds 1              general-purpose variable.
-vark:		ds 1			;   ds 1              general-purpose variable.
-varl:		ds 1			;   ds 1              general-purpose variable.
-varm:		ds 1			;   ds 1              general-purpose variable.
-varn:		ds 1			;   ds 1              general-purpose variable.
-varo:		ds 1			;   ds 1              general-purpose variable.
-varp:		ds 1			;   ds 1              general-purpose variable.
-varq:		ds 1			;   ds 1              general-purpose variable.
-varr:		ds 1			;   ds 1              general-purpose variable.
-vars:		ds 1			;   ds 1              general-purpose variable.
-vart:		ds 1			;   ds 1              general-purpose variable.
-varu:		ds 1			;   ds 1              general-purpose variable.
-varv:		ds 1			;   ds 1              general-purpose variable.
-varw:		ds 1			;   ds 1              general-purpose variable.
-varz:		ds 1			;   ds 1              general-purpose variable.
-contrl:		ds 1              ; control, 0 = keyboard, 1 = Kempston, 2 = Sinclair, 3 = Mouse.
-charx:		ds 1              ; cursor y position.
-chary:		ds 1              ; cursor x position.
+vara:		ds 1			; general-purpose variable.
+varb:		ds 1			; general-purpose variable.
+varc:		ds 1			; general-purpose variable.
+vard:		ds 1			; general-purpose variable.
+vare:		ds 1			; general-purpose variable.
+varf:		ds 1			; general-purpose variable.
+varg:		ds 1			; general-purpose variable.
+varh:		ds 1			; general-purpose variable.
+vari:		ds 1			; general-purpose variable.
+varj:		ds 1			; general-purpose variable.
+vark:		ds 1			; general-purpose variable.
+varl:		ds 1			; general-purpose variable.
+varm:		ds 1			; general-purpose variable.
+varn:		ds 1			; general-purpose variable.
+varo:		ds 1			; general-purpose variable.
+varp:		ds 1			; general-purpose variable.
+varq:		ds 1			; general-purpose variable.
+varr:		ds 1			; general-purpose variable.
+vars:		ds 1			; general-purpose variable.
+vart:		ds 1			; general-purpose variable.
+varu:		ds 1			; general-purpose variable.
+varv:		ds 1			; general-purpose variable.
+varw:		ds 1			; general-purpose variable.
+varz:		ds 1			; general-purpose variable.
+contrl:		ds 1            ; control, 0 = keyboard, 1 = Kempston, 2 = Sinclair, 3 = Mouse.
+charx:		ds 1            ; cursor y position.
+chary:		ds 1            ; cursor x position.
 colpat:		ds 1	
-prtmod:		ds 1		; print mode, 0 = standard, 1 = double-height.	
-clratt:		ds 1
+prtmod:		ds 1			; print mode, 0 = standard, 1 = double-height.	
+clratt:		ds 1			; color attributes
 	
 ; Scrolly text and puzzle variables.
 
 	if SFLAG
-txtbit:		ds 1			; db 128             bit to write.
-txtwid:		ds 1			; db 16             width of ticker message.
-txtpos:		ds 2			; dw msgdat
-txtini:		ds 2			; dw msgdat
-txtend:		ds 2			; dw 0
-txtbeg:		ds 2			; dw 0
+txtbit:		ds 1			; bit to write.
+txtwid:		ds 1			; width of ticker message.
+txtpos:		ds 2			; 
+txtini:		ds 2			; 
+txtend:		ds 2			; 
+txtbeg:		ds 2			; 
 	endif
 
 ; beeper variable
@@ -5636,8 +5875,8 @@ numlif:		ds 1            ; number of lives.
 curobj:		ds 1
 dirthig:	ds 2		
 skptr:  	ds 2            ; search pointer.
-highslot:	ds 1
-roomtb:		ds 1 			; room number.
+highslot:	ds 1            ; highest free sprite number
+roomtb:		ds 1 	        ; room number.
 
 	if MFLAG
 bwid:		ds 1            ; box/menu width.
@@ -5648,7 +5887,8 @@ blft:		ds 1
 	
 frmno:		ds 1            ; current game frame.
 combyt:		ds 1			; byte type compressed.
-comcnt: 	ds 1            ; compression counter.
+;comcnt: 	ds 1            ; compression counter.
+
 seed3:		ds 1
 nexlev:		ds 1			; db 0               next level flag.
 restfl:		ds 1			; db 0               restart screen flag.
@@ -5661,67 +5901,90 @@ varobj:		ds 1			; db 254             last object number.
 varopt:		ds 1			; db 255             last option chosen from menu.
 varblk:		ds 1			; db 255             block type.
 offset:		ds 1
+select:		ds 1			; frames to wait until next SELECT key is accepted
+ticks:		ds 1			; 50Hz=50, 60Hz=60
+; nohide:		ds 1
 
+	if RTFLAG
+usrsgn:		ds 1            ; sign.
+usrspd:		ds 1            ; speed.
+	endif
+	
 varend:		equ $
 
 	include "PT3-RAM.asm"
 	include "ayFX-RAM.asm"
 
-; Sprite table.
-; ix+0  = type.
-; ix+1  = sprite image number.
-; ix+2  = frame.
-; ix+3  = x coord.
-; ix+4  = y coord.
-
-; ix+5  = new type.
-; ix+6  = new image number.
-; ix+7  = new frame.
-; ix+8  = new x coord.
-; ix+9  = new y coord.
-
-; ix+10 = direction.
-; ix+11 = parameter 1.
-; ix+12 = parameter 2.
-; ix+13 = jump pointer low.
-; ix+14 = jump pointer high.
-; ix+15 = data pointer low.
-; ix+16 = data pointer high.
-
-sprtab:		ds SPRBUF	   
-ssprit:		ds TABSIZ
-
-colltab:	ds 15*4			; Support till 16 Y-aligned sprites.
 sprptr:		ds 2
 pblkptr:	ds 2
 stack:		ds 2
+
+
 
 	if DISTYPE=ROM
 
 keys:		ds 22
 
-	endif
-	
-; 2 bytes free for variables here (in ROM mode)
+; Don't change the order of these four.  Menu routine relies on winlft following wintop.
+wintop		ds 1		; top of window.
+winlft		ds 1		; left edge.
+winhgt		ds 1		; window height.
+winwid		ds 1		; window width.
 
+	endif
+
+; Sprite table.
+;
+; ix+0  = type.	(TYPE)
+; ix+1  = sprite image number. (IMAGE)
+; ix+2  = frame. (FRAME)
+; ix+3  = y coord. (Y)
+; ix+4  = x coord. (X)
+
+; ix+5  = color
+; ix+6  = Not used
+; ix+7  = Not used
+; ix+8  = y coord backup
+; ix+9  = x coord backup
+
+; ix+10 = direction.
+; ix+11 = parameter 1. (SETTINGA)
+; ix+12 = parameter 2. (SETTINGB)
+; ix+13 = jump pointer low. (AIRBORNE)
+; ix+14 = jump pointer high. (JUMPSPEED)
+; ix+15 = data pointer low.
+; ix+16 = data pointer high.
+
+ssprit:		ds TABSIZ
+sprtab:		ds SPRBUF	   
+		
+	if (MAPSIZE > 128)
+mapbuf:		ds MAPSIZE - 128	; spratr2+unaligned bytes are recycled
+	else
+mapbuf:		equ $				; spratr2 is enough
+	endif
 ;
 ; aligned tables
 ;
 ; move wisely!
 ;
 		ALIGN 256
-
-MAP:		ds 768			; main attributes map. Stores tile attributes		
-spratr:		ds 128			; full sprite attribute table. Cannot cross a 256 byte boundary
+		
 spratr2:	ds 128			; secondary sprite attribute table
+spratr:		ds 128			; full sprite attribute table. Cannot cross a 256 byte boundary
+MAP:		ds 768			; main attributes map. Stores tile attributes		
 	
 	if OFLAG
-objlist:	ds 256			; Objects list. Needs exact 256 alignment
+objlist:	ds 256			; Objects coords list (max. 128 objects). Needs exact 256 alignment
 	endif
 
 scrmap:		ds 768			; Blocks map. Keeps tile codes
 
-mapspr:		ds 128			; Sprite mapping list. Needs exact 256 alignment		
+mapspr:		ds 128			; Sprite mapping list (max. 64 sprites). Needs exact 256 alignment		
+
+colltab:	ds 16*4			; Support till 16 Y-aligned sprites. Must not cross a 256 byte boundary
+
+; end of aligned tables or data areas
 
 	if SFLAG
 scrbuf:		ds 256+8
@@ -5735,14 +5998,21 @@ SHRAPN:		ds NUMSHR*SHRSIZ
 	if (OFLAG and DISTYPE=ROM)
 objatr:		ds NUMOBJ*3
 	endif
+
+	; if (DISTYPE=ROM and DISSIZE=48) or (DISTYPE!=ROM and DISSIZE=64)
+	ifdef NOBIOS
+biosvars:	ds $38	
+	endif
 	
 eop:		equ $
 
+	dephase
+	
 ;
 ; Extra binary. Loaders for disk/tape versions
 ;
 
-	if DISTYPE=DISK
+	if (DISTYPE!=ROM and DISSIZE>32)
 	
 		output loader.bin
 
@@ -5751,73 +6021,243 @@ eop:		equ $
 		dw endslots-1
 		dw slots
 
-		org $F41F		
-
-slots:  
+		org $F41F				; KBUF F41F-F55C(318 bytes available)
+		
+slots:	equ $
+	
+mvpage0:
 		di
-		call bakslots
-		call enap1
-		ld hl,$8080
+		call saveslots
+		push de
+		call enapage1
+		call enapage0
+		ld de,$0000
+		jr putram
+mvpage1:  
+		di
+		call saveslots
+		push de
+		call enapage1
 		ld de,$4000
+putram:
+		ld hl,$8080
 		ld bc,$4000
 		ldir 
-		call oldslots
+		pop de
+		call loadslots
 		ei
 		ret
 
-run:
-		di
-		call enap1
-		ei
-		jp $4000
-		
-		; enable RAM page 1 as MAP points up
-enap1: 
-		ld a,(MSX_EXPTBL+3)
-		ld b,a                 ;check if slot is expanded
-		and a
-		jp z,enaram2
-		ld a,(MSX_SSSREG)           ;if so, read subslot value first
-		cpl                        ;complement value
-		and 11000000b
-		rrca                       ;shift subslot bits to bits 2-3
-		rrca
-		rrca
-		rrca
-		or b
-		ld b,a
-enaram2: 
-		in a,(MSX_RAMIO)             ;read slot value
-		and 11000000b           ;shift slot bits to bits 0-1
-		rlca
-		rlca
-		or b
-		ld h,0x40               ;select slot
-		jp MSX_ENASLT		
-		
-bakslots:
-		in a,(MSX_RAMIO)
-		ld (slta),a
+runpage0:
+		jp runpage0a
+
+runpage1:
+		jp runpage1a
+				
+saveslots:
 		ld a,(MSX_SSSREG)
-		cpl
-		ld (sltb),a
+		cpl			; reverse all bits
+		ld d,a		; Store the current secondary slots register
+		in a,(MSX_PPIA)
+		ld e,a		; Store the current primary slots register
+		ret
+		
+loadslots:		
+		ld a,e
+		out	(MSX_PPIA),a	; Restore the register as at start
+		ld a,d
+		ld (MSX_SSSREG),a	; Restore the register as at start				
 		ret
 
-oldslots:
-		ld a,(sltb)
-		ld (MSX_SSSREG),a
-		ld a,(slta)
-		out (MSX_RAMIO),a
+runpage1a:
+		di
+		call inipage1
+		jr run				
+		
+runpage0a:
+		di
+		call inipage1
+	if DISSIZE=64
+		call cpbiosvars
+	endif
+		call enapage0
+run:		
+		jp $4000
+
+turboon:		
+		ld a,(MSX_CHGCPU)
+		cp $C3
+		ld a,$81
+		jp z,MSX_CHGCPU
+		ret
+		
+	if DISTYPE=DISK
+drvmotoff:
+		ld a,(MSX_MSLOT)	; motor off entry present?
+		ld hl,MSX_MTOFF
+		call MSX_RDSLT
+		and	a
+		ret	z				; no, no way....
+		ld iy,(MSX_MSLOT-1)	; we have it! call it now
+		ld ix,MSX_MTOFF
+		jp MSX_CALSLT
+	endif
+
+	if DISSIZE=64
+cpbiosvars:		
+		ld hl,0
+		ld de,biosvars
+		ld bc,$0038
+		ldir
+		ret		
+	endif
+
+enapage0:
+		ld d,$00
+		ld hl,MSX_ENASLT
+		jr setcall
+
+inipage1:
+	if DISTYPE=DISK
+		call drvmotoff
+	endif
+		call turboon
+		; falls through to enapage1
+enapage1:
+		ld d,$40
+		ld hl,($0025)
+setcall:
+		ld (VEC_ENASLT+1),hl
+
+	
+;	find a valid RAM page with the aid of BIOS
+;	Input:
+;		D = MSB of page address
+;
+putRAMpgX:
+		ld b,4
+sl_loop:
+		ld c,b
+		dec	c
+		push de
+		push bc
+		call chkExp	;modifies B,AF,HL
+		jp p,isNotExp
+		call sub_chk
+		jr nz,found
+		jr sl_end
+isNotExp:            	
+		;ld	h,#80
+		ld	h,d
+		ld	a,c
+		push	hl
+		push	af	
+		call	VEC_ENASLT	;select unexpanded slot
+		pop	de	;D contains the slot/subslot/expn bit
+		pop	hl
+		call	chkWrite
+		jr	nz,found	;is RAM
+sl_end:	
+		pop	bc
+		pop	de
+		djnz	sl_loop
+		;if nothing jumped to "found", then A must be -1
+		ld	a,-1
+		jr	found2
+
+found:
+		pop	hl	;balance stack
+		pop	hl
+		;D = slot/sub/slot/expand bit
+found2:			;exit if stack is balanced
 		ret
 
+sub_chk:
+		ld	a,c
+		or	#80	;set expanded bit
+		ld	b,4
+		ld	h,d	;prepare page address in H
+sub_loop:
+		push	bc
+		ld	c,b
+		dec	c
+		rl	c
+		rl	c
+		or	c
+		;ld	h,#80
+		push	hl
+		push	af
+		call	VEC_ENASLT
+		pop	af
+		ld	d,a	;save slot/subslot/exp on D register
+		and	#f3	;clean subslot bits for next iteration
+		ld	e,a
+		pop	hl
+		call	chkWrite
+		jr	nz,sub_end	;is RAM
+		ld	a,e
+		pop	bc
+		djnz	sub_loop
+		jr 	sub_end2
+
+sub_end:
+		pop	hl; 	balance stack
+	;	pop	hl
+
+sub_end2:	;exit if stack is balanced
+		ret
+
+chkWrite:
+		;**********************************************		
+		;chkWrite
+		;
+		;Checks whether address WRTTST is writable or not
+		;
+		;Input: none
+		;Output: flag Z if non writable
+		;Modified: AF
+		;
+
+		ld	a,(hl)
+		inc	(hl)
+		cp	(hl)
+		ld (hl),a
+		ret
+	
+
+chkExp:
+		;**********************************************	
+		;chkExp
+
+		;Checks whether slot C is expanded or not
+		;Result is returned in S flag (jp M or jp P)
+		;
+		;Input registers:
+		;
+		; C = primary slot
+		;
+		;Output:
+		;
+		; S flag
+		;
+		;Modified:
+		;
+		; B,HL,AF
+		
+		ld	b,0
+		ld	hl,MSX_EXPTBL
+		add	hl,bc
+		ld	a,(hl)          ;see if this slot is expanded or not
+		and	#80             
+		ret
+	
+VEC_ENASLT:
+		db $C3
+		ds 2
+		
+		
 endslots:	equ $
 		
-		output loader_vars.tmp
-
-		org endslots
-		
-slta:	ds 1
-sltb:	ds 1		
-
 	endif
+
 	
