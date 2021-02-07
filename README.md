@@ -26,19 +26,33 @@ Where:
    \<AGD file>  AGD source file without .agd extension (1)
 
    -?|-h         This help
+   
    -a	  Enables adventure mode (default: off)
+   
    -m  Enables metablocks mode (default: off)
+   
    -c   Enables HW sprite collisions (default: off, standard AGD routine)
+   
    -b   Enables "Pacman mode" collectable blocks (default: off, standard AGD behaviour, collectables are redrawn after a screen restart)
+   
    -l    Enables SFX relative volume mode (default: off)
+   
    -y   Enables SFX dynamic channel mode output (default: off, fixed PSG channel used)
+   
    -s \<channel>  PSG output channel when dynamic mode is off. Valid values are: 1 (C), 2 (B) or 3 (C) (default:1)
+   
    -f \<Hz>       Force TV refresh Hz in MSX2 or higher machines: Valid values are: 0 (machine default), 50 (50Hz), 60 (60Hz) (default:0)
+   
    -t \<SC2 file> Loads a title screen (only disk based)
+   
    -q \<SC2 file> Loads a marquee screen to be used by te game (only disk based. No video initialization at boot)
+   
    -r \<size>  Cartridge (ROM) distribution. Valid KB sizes are: 16,32,48 (default size:16)
+   
    -d \<size>  Disk (RAM) distribution. Valid KB sizes are: 32,48,64 (default size:32)
+   
    -k \<size>  Tape (RAM) distribution. Valid KB sizes are: 32,48,64 (default size:32)
+   
    -x \<MSX type> Launch <MSX type> emulation after successful build
 
                  MSX types (-x)
