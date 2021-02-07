@@ -8,6 +8,7 @@ AGD suite for converting, compiling and running AGD games on an MSX machine. Rig
 Simply copy the files into a directory and make sure you have a couple of environment variables initialized:
 
 **MSXEMUPATH** = Absolute directory path of your chosen emulator.
+
 **EMU** = Name of the chosen emulator executable.
 
 MPAGD for MSX supports the following emulators: OpenMSX, BlueMSX and fMSX (being their respective executables openmsx.exe, bluemsx.exe and fMSX.exe).
