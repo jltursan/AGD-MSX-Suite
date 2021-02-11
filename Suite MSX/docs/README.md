@@ -7,8 +7,8 @@ AGD suite for converting, compiling and running AGD games on an MSX machine. Rig
 ## Installation
 Simply copy the files into a directory and make sure you have a couple of environment variables initialized:
 
-**MSXEMUPATH** = Absolute directory path of your chosen emulator.
-**EMU** = Name of the chosen emulator executable.
+-**MSXEMUPATH** = Absolute directory path of your chosen emulator.
+-**EMU** = Name of the chosen emulator executable.
 
 MPAGD for MSX supports the following emulators: OpenMSX, BlueMSX and fMSX (being their respective executables openmsx.exe, bluemsx.exe and fMSX.exe).
 If you use OpenMSX by default, you can tune up the build.bat script to setup in the first lines which ones are your favorite MSX models used to launch games.
@@ -18,7 +18,7 @@ The use of **MPAGD suite v0.7.10** (https://jonathan-cauldwell.itch.io/multi-pla
 
 
 ## Building AGD programs
-Usage: build \<AGD file> [-?|-h] [-a] [-m] [-c] [-l] [-s \<PSG channel>] [-f \<Hz>] [-t \<SC2 file>] [-q \<SC2 file>] [-r \<KB Size>|-d \<KB size>|-k \<KB size>] [-x \<MSX type>]
+Usage: build \<AGD file> [-?|-h] [-a] [-m] [-c] [-b] [-l] [-s \<PSG channel>] [-f \<Hz>] [-t \<SC2 file>] [-q \<SC2 file>] [-r \<KB Size>|-d \<KB size>|-k \<KB size>] [-x \<MSX type>]
 
 Where:
 
@@ -28,6 +28,7 @@ Where:
    -a	  Enables adventure mode (default: off)
    -m  Enables metablocks mode (default: off)
    -c   Enables HW sprite collisions (default: off, standard AGD routine)
+   -b   Enables "Pacman mode" collectable blocks (default: off, standard AGD behaviour, collectables are redrawn after a screen restart)
    -l    Enables SFX relative volume mode (default: off)
    -y   Enables SFX dynamic channel mode output (default: off, fixed PSG channel used)
    -s \<channel>  PSG output channel when dynamic mode is off. Valid values are: 1 (C), 2 (B) or 3 (C) (default:1)
@@ -361,7 +362,7 @@ Try to not to abuse also of particles, several particle sources can easily overh
 
 Here's a simplified AGD events flow chart. Try to understand it works and you'll get a useful understanding on how AGD works:
 
-![enter image description here](https://i.imgur.com/KFlpdKU.png)
+![enter image description here](https://github.com/jltursan/AGD-MSX-Suite/blob/master/Suite%20MSX/docs/AGD%20Flow%20Chart.png)
 
 ## Extra tools
 The MSX suite comes with some extra tools I've added:

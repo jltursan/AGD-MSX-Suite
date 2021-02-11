@@ -1206,15 +1206,13 @@ cls:
 ; Palette.
 
 setpal:
-		ld a,(MSX_VDPPRT)	; get first VDP write port
-		ld c,a
-		inc c      		; prepare to write register data
 		xor a      		; from color 0
-		out (c),a
+		di
+		out (MSX_VDPCW),a
 		ld a,16+128		; write R#16
-		out (c),a
-		inc c      		; prepare to write palette data
-		ld b,32      	; 16 color * 2 bytes for palette data
+		ei
+		out (MSX_VDPCW),a
+		ld bc,$209A
 		otir
 		ret
 		
@@ -1887,7 +1885,7 @@ evini:
 ; First restart - clear all sprites and initialise everything.
 
 rstrt:
-		call rsevt          ; restart events (evnt14 - RESTARTSCREEN).
+		call rsevt          ; Caused by RESTART/KILL. Restart event (evnt14 - RESTARTSCREEN).
 		call xspr           ; clear sprite table.
 		call sprlst         ; fetch pointer to screen sprites.
 		call ispr           ; initialise sprite table.
@@ -1896,12 +1894,14 @@ rstrt:
 ; Second restart - clear all but player, and don't initialise him.
 
 rstrtn:
-		call rsevt          ; restart events (evnt14 - RESTARTSCREEN).
+		call rsevt          ; Caused by SCREEN change. Restart event (evnt14 - RESTARTSCREEN).
 		call nspr           ; clear all non-player sprites.
 		call xspr0
 		call sprlst         ; fetch pointer to screen sprites.
 		call kspr           ; initialise sprite table, no more players.
-
+	if CBFLAG=1
+		call clrcolpat
+	endif	
 ; Set up the player and/or enemy sprites.
 
 rstrt0: 
@@ -1963,9 +1963,9 @@ evlp2:
 		jr nz,evwon         ; yes, finish the game.
 		ld a,(restfl)       ; finished level flag.
 		dec a               ; has it been set?
-		jp z,rstrt          ; yes, go to next level.
+		jp z,rstrt          ; yes, restart level (RESTART command). 
 		dec a               ; has it been set?
-		jp z,rstrtn         ; yes, go to next level.
+		jp z,rstrtn         ; yes, go to next level (new SCREEN map).
 		ld a,(deadf)        ; dead flag.
 		and a               ; is it non-zero?
 		jr nz,pdead         ; yes, player dead.
@@ -3025,9 +3025,9 @@ ldirvm0:
 ; Print block with attributes, properties and pixels (saves block if adventure mode).
 
 pattr:
-		if AFLAG
+	if AFLAG
 		call wbloc          ; save blockinfo	   
-		endif
+	endif
 
 ; Print block with attributes, properties and pixels (no saving).
 		
@@ -3035,27 +3035,37 @@ pattr2:
 		ld b,a              ; store cell in b register for now.
 		ld hl,(proptr)      ; pointer to properties.
 		ADD_HL_A
-		ld c,(hl)           ; fetch byte.
+		ld c,(hl)           ; fetch property byte.
 		ld a,c              ; put into accumulator.
 		cp COLECT           ; is it a collectable?
 		jp nz,pattr1        ; no, carry on as normal.
 		ld a,b              ; restore cell.
 		ld (colpat),a       ; store collectable block.
 pattr1:
-		ld de,MAP
 		call pradd          ; get property buffer address.
-		push hl
+		ex de,hl
+	if CBFLAG=1				; Pacman mode enabled
+		ld hl,scrmap		; screen buffer		
 		add hl,de
-		ld (hl),c           ; write property.		
-		ld de,scrmap		; screen buffer
-		pop hl
+		ld a,(hl)
+		cp b
+		jr z, pattrnxt		; skip printing char
+ 		ld (hl),b			; write char		
+		ld hl,MAP		
+		add hl,de
+		ld (hl),c           ; write property.
+	else	
+		ld hl,MAP		
+		add hl,de
+		ld (hl),c           ; write property.
+		ld hl,scrmap		; screen buffer		
 		add hl,de
 		ld a,(hl)
 		cp b
 		jr z, pattrnxt		; skip printing char
  		ld (hl),b		
+	endif	
 		ld a,b              ; restore block number.
-
 ; Print block.
 pchr:
 		rlca                ; find address for the block 
@@ -3441,7 +3451,11 @@ gtblk:
 		ld hl,(blkptr)      ; blocks.
 		ld (grbase),hl      ; set graphics base.
 		xor a
+	if CBFLAG=1
 		jp pchr
+	else
+		jp pattr2
+	endif
 
 	endif
 	
@@ -4637,6 +4651,22 @@ initsc:
 		ret z               ; no, it's rubbish.
 		ld (scno),a         ; store new room number.
 		ret
+		
+	if CBFLAG=1
+clrcolpat:
+		ld hl,scrmap
+		ld bc,768
+		ld a,(colpat)
+		or a
+		ret z
+.search:
+		cpir
+		ret nz
+		dec hl
+		ld (hl),0
+		inc hl
+		jr .search
+	endif
 
 ; Test screen.
 ;

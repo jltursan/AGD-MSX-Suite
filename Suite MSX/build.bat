@@ -60,6 +60,7 @@ set DFLAG=
 set KFLAG=
 set MBFLAG=
 set HCFLAG=
+set CBFLAG=
 set QFLAG=
 set RFLAG=
 set TFLAG=
@@ -88,6 +89,8 @@ if "%OPT%"=="" (
 	set MBFLAG= -m
 ) else if "%OPT%"=="-c" (
 	set HCFLAG= -c
+) else if "%OPT%"=="-b" (
+	set CBFLAG= -b
 ) else if "%OPT%"=="-l" (
 	set FXRFLAG= -l
 ) else if "%OPT%"=="-y" (
@@ -332,7 +335,7 @@ if not "%AFLAG%"=="" (
 )
 set /a MAXRAM=MAXRAM-(65536-MEMORY*1024)
 
-set COMPILERFLAGS=%BFLAG%%AFLAG%%MBFLAG%%HCFLAG%%TVFLAG%%FXRFLAG%%FXDFLAG%%FXCFLAG%%QFLAG%
+set COMPILERFLAGS=%BFLAG%%AFLAG%%MBFLAG%%HCFLAG%%CBFLAG%%TVFLAG%%FXRFLAG%%FXDFLAG%%FXCFLAG%%QFLAG%
 
 :main
 if not exist "%SOURCES%\%NAME%.agd" (
@@ -965,7 +968,7 @@ EXIT /B
 echo.
 echo Description: ^"build^" batch script builds the MSX distribution for an AGD source.
 echo.
-echo Usage: build ^<AGD file^> [-?^|-h] [-a] [-m] [-c] [-l] [-s ^<PSG channel^>] [-f ^<Hz^>] [-t ^<SC2 file^>] [-q ^<SC2 file^>] [-r ^<KB Size^>^|-d ^<KB size^>^|-k ^<KB size^>] [-x ^<MSX type^>]
+echo Usage: build ^<AGD file^> [-?^|-h] [-a] [-m] [-c] [-b] [-l] [-s ^<PSG channel^>] [-f ^<Hz^>] [-t ^<SC2 file^>] [-q ^<SC2 file^>] [-r ^<KB Size^>^|-d ^<KB size^>^|-k ^<KB size^>] [-x ^<MSX type^>]
 echo. 
 echo    ^<AGD source^>  AGD source file without .agd extension (*1)
 echo. 
@@ -973,6 +976,7 @@ echo    -?^|-h         This help
 echo    -a            Enables adventure mode (default: off)
 echo    -m            Enables metablocks mode (default: off)
 echo    -c            Enables HW sprite collisions (default: off, standard AGD routine)
+echo    -b            Enables ^"Pacman mode^" collectable blocks (default: off, standard AGD behaviour)
 echo    -l            Enables SFX relative volume mode (default: off)
 echo    -y            Enables SFX dynamic channel mode output (default: off, fixed PSG channel used)
 echo    -s ^<channel^>  PSG output channel when dynamic mode is off: 1 (C), 2 (B) or 3 (C) (default:1)
